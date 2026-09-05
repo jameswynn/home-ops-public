@@ -1,0 +1,133 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app endurain
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  values:
+    controllers:
+      endurain:
+        annotations:
+          reloader.stakater.com/auto: "true"
+
+        pod:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+
+        initContainers:
+          init-db:
+            image:
+              repository: ghcr.io/home-operations/postgres-init
+              tag: 18.6
+              pullPolicy: IfNotPresent
+            envFrom:
+              - secretRef:
+                  name: endurain-initdb
+
+        containers:
+          app:
+            image:
+              repository: codeberg.org/endurain-project/endurain
+              tag: v0.19.0
+            # The upstream entrypoint regenerates env.js and rewrites the CSP in
+            # index.html under /app/frontend/dist, which fails under
+            # readOnlyRootFilesystem — so start uvicorn directly and supply
+            # env.js from the configMap below.
+            command:
+              - uvicorn
+              - main:app
+              - --host
+              - 0.0.0.0
+              - --port
+              - "8080"
+              - "--proxy-headers"
+            env:
+              TZ: ${CLUSTER_TZ}
+              ENDURAIN_HOST: endurain.${SECRET_ROOT_DOMAIN}
+            envFrom:
+              - secretRef:
+                  name: *app
+
+            probes:
+              liveness:
+                enabled: true
+              readiness:
+                enabled: true
+              startup:
+                enabled: true
+                spec:
+                  failureThreshold: 60
+                  periodSeconds: 5
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: {drop: ["ALL"]}
+            # CPU from 7d of Prometheus data: p50 3m, p95 3m, max 4m. 25m is ~6x
+            # the observed max. No CPU limit, per the cluster convention.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 128Mi
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 512Mi
+                ephemeral-storage: 100Mi
+
+    service:
+      app:
+        controller: endurain
+        ports:
+          http:
+            port: 8080
+
+    persistence:
+      config:
+        enabled: true
+        name: *app
+        type: configMap
+        globalMounts:
+          - path: /app/frontend/dist/env.js
+            subPath: env.js
+            readOnly: true
+      data:
+        enabled: true
+        existingClaim: endurain-data
+        globalMounts:
+          - path: /app/backend/data
+      logs:
+        type: emptyDir
+        sizeLimit: 100Mi
+        globalMounts:
+          - path: /app/backend/logs
+      tmpfs:
+        type: emptyDir
+        sizeLimit: 200Mi
+        globalMounts:
+          - path: /tmp
+
+    route:
+      app:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "Endurain"
+          gethomepage.dev/description: "Fitness Tracking"
+          gethomepage.dev/group: "Applications"
+          gethomepage.dev/icon: "endurain.png"
+          gethomepage.dev/weight: "100"
+          external-dns.alpha.kubernetes.io/hostname: "endurain.${SECRET_ROOT_DOMAIN}"
+        hostnames:
+          - "endurain.${SECRET_ROOT_DOMAIN}"
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+          - name: envoy-towonel
+            namespace: networking

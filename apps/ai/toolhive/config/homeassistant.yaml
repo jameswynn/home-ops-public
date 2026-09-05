@@ -1,0 +1,64 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserver_v1beta1.json
+# Tanguille: HOMEASSISTANT_URL uses ${HOME_ASSISTANT_IP}:8123 (static IP, off-cluster
+# or external). In this cluster HA is deployed in-cluster (apps/home/home-assistant),
+# so we use the internal service URL instead.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: homeassistant
+spec:
+  image: ghcr.io/homeassistant-ai/ha-mcp:8.3.0@sha256:38b3a0b6b6b69d3fd074f958fbf9653ae2d50c8727b4c0dcde640cfa3a638176
+  transport: streamable-http
+  mcpPort: 8086
+  proxyPort: 8080
+  groupRef:
+    name: all
+  env:
+    - name: HOMEASSISTANT_URL
+      value: http://home-assistant.home.svc.cluster.local:8123
+    - name: FASTMCP_HOST
+      value: "0.0.0.0"
+    - name: TMPDIR
+      value: /tmp
+  secrets:
+    - name: toolhive-secrets
+      key: HOMEASSISTANT_API_TOKEN
+      targetEnvName: HOMEASSISTANT_TOKEN
+  podTemplateSpec:
+    spec:
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: mcp
+          command: ["fastmcp", "run", "fastmcp-http.json"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          ports:
+            - name: mcp
+              containerPort: 8086
+          startupProbe:
+            tcpSocket:
+              port: mcp
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: mcp
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 128Mi

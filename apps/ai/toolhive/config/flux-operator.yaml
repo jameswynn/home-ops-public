@@ -1,0 +1,34 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserver_v1beta1.json
+# Adapted from Tanguille: their cluster uses a kubeconfig file from a secret
+# (Talos-specific machineconfig path). This cluster is k3s, so we use the
+# toolhive-flux-reader ServiceAccount (defined in flux-operator-rbac.yaml) for
+# standard in-cluster token auth instead.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: flux-operator
+spec:
+  image: ghcr.io/controlplaneio-fluxcd/flux-operator-mcp:v0.58.1@sha256:7bbcff1fb43ff9452eca38b48c925e12c08cddf7d603c25e59be6e0758ba0ccc
+  transport: stdio
+  groupRef:
+    name: all
+  args:
+    - serve
+  podTemplateSpec:
+    spec:
+      serviceAccountName: toolhive-flux-reader
+      containers:
+        - name: mcp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 200Mi

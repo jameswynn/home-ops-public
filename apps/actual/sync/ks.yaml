@@ -1,0 +1,26 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app actual-sync
+  namespace: &namespace actual
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  # The sidecar logs into the Actual server on startup, so it is useless until
+  # actual itself is up. Nothing here is persistent — no volsync component.
+  dependsOn:
+    - name: actual
+      namespace: *namespace
+  postBuild:
+    substitute:
+      APP: *app
+  path: ./apps/actual/sync/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system

@@ -1,0 +1,37 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: garage-operator
+spec:
+  interval: 12h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 0.4.10
+  url: oci://ghcr.io/rajsinghtech/charts/garage-operator
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: garage-operator
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: garage-operator
+  values:
+    # CPU from 7d of Prometheus data: p50 2.4m, p95 3.1m, max 93.7m — flat
+    # reconcile loop with an occasional layout-change spike. 25m is the
+    # practical request floor. No CPU limit, per the cluster convention.
+    resources:
+      limits:
+        memory: 512Mi
+        ephemeral-storage: 200Mi
+      requests:
+        cpu: 25m
+        memory: 128Mi
+        ephemeral-storage: 200Mi

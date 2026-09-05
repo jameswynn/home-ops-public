@@ -1,0 +1,14 @@
+/tmp/*
+kubeconfig
+.decrypted~*
+old/
+todo.md
+
+# doco-cd bootstrap env (real secrets live on the VPS only; commit .env.example instead)
+docker/vps/.doco-cd/.env
+
+# Claude Code git worktrees. These are full checkouts of other branches, so
+# gitleaks rescans every file in them under a different path — which misses the
+# path-keyed fingerprints in .gitleaksignore and fails the pre-commit hook on
+# already-accepted findings.
+.claude/worktrees/

@@ -1,0 +1,90 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: actual-namespace-policy
+  namespace: actual
+spec:
+  endpointSelector: {}
+  ingress:
+    # Allow ingress from internal envoy-gateway in the networking namespace.
+    #
+    # envoy-internal only. The cluster also runs envoy-towonel (the public edge),
+    # and its absence here is deliberate rather than an oversight: this budget
+    # holds live bank credentials and has no business being publicly routable.
+    # app/helm-release.yaml's route parentRef matches — keep the two in step.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.networking.k8s.io/gateway-name: envoy-internal
+            # This label must exist on the namespace object itself
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Allow ingress from the ai namespace — the Actual MCP server talks to the
+    # Actual API at actual.actual.svc:5006. Port-scoped rather than a bare
+    # namespace match: 5006 is the only thing in here worth reaching, and the
+    # sync sidecar has no listener at all.
+    #
+    # The matching egress rule lives in apps/ai/netpols.yaml.
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": ai
+      toPorts:
+        - ports:
+            - port: "5006"
+              protocol: TCP
+
+    # Allow intra-namespace traffic (pod-to-pod within actual)
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": actual
+
+    # Allow ingress from prometheus
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: prometheus
+            # This label must exist on the namespace object itself
+            "k8s:io.kubernetes.pod.namespace": monitoring
+
+  egress:
+    # Allow intra-namespace traffic
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": actual
+
+    # Allow DNS
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Internet egress. This is the bank-sync path: actual-server itself calls
+    # SimpleFIN (bridge.simplefin.org) over HTTPS while syncing. The sync sidecar
+    # does not need this — it only reaches actual.actual.svc via the
+    # intra-namespace rule above and drives the server through the local API.
+    #
+    # Deliberately `toEntities: world` + toPorts rather than toFQDNs. FQDN policy
+    # would work here (enable-l7-proxy and dnsproxy-enable-transparent-mode are
+    # both on cluster-wide), but it requires upgrading the DNS rule above to an
+    # L7 rule with toPorts.rules.dns.matchPattern, and a malformed FQDN rule
+    # fails closed on *all* egress rather than just the intended host. Nothing
+    # else in this repo uses toFQDNs; this is not the workload to pioneer it on.
+    #
+    # If something in here turns out to need another port the symptom is a sync
+    # that hangs and times out, not one that errors. Widen back to a bare
+    # `toEntities: [world]` and move on.
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP

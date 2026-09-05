@@ -1,0 +1,102 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app ghostfolio
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  values:
+    controllers:
+      ghostfolio:
+        annotations:
+          reloader.stakater.com/auto: "true"
+
+        # pod:
+        #   securityContext:
+        #     runAsUser: 1000
+        #     runAsGroup: 1000
+        #     fsGroup: 1000
+        #     fsGroupChangePolicy: OnRootMismatch
+
+        initContainers:
+          init-db:
+            image:
+              repository: ghcr.io/home-operations/postgres-init
+              tag: 18.6
+              pullPolicy: IfNotPresent
+            envFrom:
+              - secretRef:
+                  name: ghostfolio-init-db
+        containers:
+          app:
+            image:
+              repository: mirror.gcr.io/ghostfolio/ghostfolio
+              tag: 3.57.0@sha256:73afe4f0e4920a9a8f7a38aa77fcd92d36b6520cc0bd9bfc710e951b41c7b8b3
+            env:
+              NODE_ENV: production
+              REDIS_HOST: ghostfolio-dragonfly
+              REDIS_PORT: 6379
+            envFrom:
+              - secretRef:
+                  name: *app
+
+            # probes:
+            #   liveness:
+            #     enabled: true
+            #   readiness:
+            #     enabled: true
+            #   startup:
+            #     enabled: true
+            #     spec:
+            #       failureThreshold: 30
+            #       periodSeconds: 5
+            # securityContext:
+            #   allowPrivilegeEscalation: false
+            #   readOnlyRootFilesystem: true
+            #   capabilities: { drop: [ "ALL" ] }
+            # CPU from 7d of Prometheus data: p50 1m, p95 2m, max 61m. Idle-heavy
+            # with short import bursts, which the removed 2000m limit only ever
+            # throttled. No CPU limit, per the cluster convention.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 128Mi
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 2Gi
+                ephemeral-storage: 100Mi
+
+    # defaultPodOptions:
+    #   securityContext:
+    #     runAsNonRoot: true
+    #     runAsUser: 1000
+    #     runAsGroup: 1000
+    #     fsGroup: 1000
+    #     fsGroupChangePolicy: OnRootMismatch
+
+    service:
+      app:
+        controller: ghostfolio
+        ports:
+          http:
+            port: 3333
+
+    route:
+      app:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "Ghostfolio"
+          gethomepage.dev/description: "Finance Tracking"
+          gethomepage.dev/group: "Office"
+          gethomepage.dev/icon: "ghostfolio.png"
+          gethomepage.dev/weight: "110"
+          internal.wynning.tech/hostname: &host "{{ .Release.Name }}.${SECRET_INTERNAL_DOMAIN}"
+        hostnames:
+          - *host
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking

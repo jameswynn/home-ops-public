@@ -1,0 +1,72 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/opentelemetry.io/opentelemetrycollector_v1beta1.json
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: gateway
+  namespace: monitoring
+spec:
+  mode: deployment
+  replicas: 1
+  # The operator's default collector image (core/k8s distro) lacks the
+  # prometheusremotewrite exporter; only the contrib distro ships it.
+  # renovate: datasource=docker
+  image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.159.0
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      batch: {}
+    exporters:
+      # Traces -> Tempo (in-cluster gRPC, plaintext).
+      otlp/tempo:
+        endpoint: tempo.monitoring.svc.cluster.local:4317
+        tls:
+          insecure: true
+      # Metrics -> Prometheus remote-write (enableRemoteWriteReceiver is on).
+      prometheusremotewrite:
+        endpoint: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090/api/v1/write
+      # Logs -> Loki's native OTLP endpoint (otlphttp appends /v1/logs -> /otlp/v1/logs).
+      otlphttp/loki:
+        endpoint: http://loki-gateway.monitoring.svc.cluster.local:80/otlp
+    service:
+      pipelines:
+        traces:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - batch
+          exporters:
+            - otlp/tempo
+        metrics:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - batch
+          exporters:
+            - prometheusremotewrite
+        logs:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - batch
+          exporters:
+            - otlphttp/loki

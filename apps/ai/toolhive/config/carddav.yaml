@@ -1,0 +1,154 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserver_v1beta1.json
+#
+# CardDAV contacts MCP backend for Jonathon's secretary profile (#1552).
+#
+# Same upstream image and the same three-layer narrowing as caldav.yaml — read
+# the header there for why these are two MCPServers instead of one, and
+# CALDAV-CARDDAV.md for the credential and verification details.
+#
+# This backend exposes **no destructive tool at all**: contacts can be found,
+# read, created and amended, but nothing here can delete a contact or an
+# address book. That is the whole safety boundary for #1552, and it is enforced
+# by `toolsFilter` below rather than by Cedar, so it holds for every profile
+# rather than only for the ones with a permit.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: carddav
+spec:
+  image: ghcr.io/pi0n00r/nextcloud-mcp-server:v1.8.1@sha256:0984b2a0a2a5546fc8ef188282ad2c8a78070c823d92977e40d3fc9766ca677b
+  transport: streamable-http
+  mcpPort: &port 8000
+  groupRef:
+    name: all
+  # Registers the contacts module only — 11 tools, verified against the pinned
+  # digest. See caldav.yaml for the full list of valid app keys.
+  args:
+    - --enable-app
+    - contacts
+  env:
+    - name: NEXTCLOUD_HOST
+      value: https://cloud.${SECRET_ROOT_DOMAIN}
+    - name: MCP_DEPLOYMENT_MODE
+      value: single_user_basic
+    - name: TMPDIR
+      value: /tmp
+    - name: TOKEN_STORAGE_DB
+      value: /tmp/nextcloud-mcp-tokens.db
+    - name: ENABLE_SEMANTIC_SEARCH
+      value: "false"
+  toolConfigRef:
+    name: carddav
+  podTemplateSpec:
+    spec:
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: data
+          emptyDir:
+            sizeLimit: 64Mi
+      containers:
+        - name: mcp
+          # Separate Nextcloud app password from the caldav backend, so either
+          # can be revoked in Nextcloud without disturbing the other. Injected
+          # via secretKeyRef because spec.secrets is keyed by secret name and
+          # cannot carry two keys from one Secret.
+          env:
+            - name: NEXTCLOUD_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-secrets
+                  key: NEXTCLOUD_CARDDAV_USERNAME
+            - name: NEXTCLOUD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-secrets
+                  key: NEXTCLOUD_CARDDAV_APP_PASSWORD
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /app/data
+          ports:
+            - name: mcp
+              containerPort: *port
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: mcp
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: mcp
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              # Measured 316Mi RSS idle from the pinned digest with the contacts
+              # module loaded. nc_contacts_search_contacts fetches and parses
+              # every vCard in every address book, so the limit has to cover a
+              # full address-book materialisation, not just idle.
+              memory: 384Mi
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 768Mi
+              ephemeral-storage: 256Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 100Mi
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcptoolconfig_v1beta1.json
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPToolConfig
+metadata:
+  name: carddav
+spec:
+  # Allow-list; the VirtualMCPServer prepends the MCPServer name, so the Cedar
+  # forms in authzconfig.yaml are carddav_nc_contacts_*.
+  #
+  # Read/write boundary — upstream ToolAnnotations are correct and pass through
+  # unmodified:
+  #   read      readOnlyHint=true   list_addressbooks, list_contacts,
+  #                                 search_contacts, get_contact
+  #   write     (no read-only hint) create_contact, patch_contact
+  #   destroy   none exposed
+  #
+  # Deliberately excluded from the 11 the server registers:
+  #   nc_contacts_delete_contact     — destructiveHint=true. Contact loss is
+  #     silent and hard to notice; the secretary profile has no task that needs
+  #     it. Deleting stays a human action in the Nextcloud UI.
+  #   nc_contacts_delete_addressbook — destructiveHint=true, and takes every
+  #     contact in the collection with it.
+  #   nc_contacts_create_addressbook — collection-level structure is a human
+  #     decision, and a stray address book is invisible to the tools that
+  #     search only the ones they are told about.
+  #   nc_contacts_put_contact        — full raw vCard replacement. The caller is
+  #     responsible for byte-correctness, so any property the model does not
+  #     echo back (PHOTO, X-*, folded NOTEs) is dropped. patch_contact reaches
+  #     the same edits through a byte-preserving path.
+  #   nc_contacts_update_contact     — upstream marks it DEPRECATED and it is a
+  #     lossy JSON shim over patch_contact. Excluded so the model cannot pick
+  #     the lossy spelling of an edit that patch_contact already does properly.
+  #
+  # Both exposed writes are ETag-guarded upstream: patch_contact requires an
+  # If-Match precondition from a prior get_contact/list_contacts, so a
+  # concurrent edit from a phone or the web UI surfaces as a 412 conflict
+  # rather than being silently overwritten.
+  toolsFilter:
+    # --- read ---
+    - nc_contacts_list_addressbooks
+    - nc_contacts_list_contacts
+    - nc_contacts_search_contacts
+    - nc_contacts_get_contact
+    # --- write (additive / byte-preserving, ETag-guarded) ---
+    - nc_contacts_create_contact
+    - nc_contacts_patch_contact

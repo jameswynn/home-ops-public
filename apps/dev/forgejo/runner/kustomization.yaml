@@ -1,0 +1,27 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helm-release.yaml
+  # configmap.yaml stays out on purpose: it defines a ConfigMap named `runner-config`
+  # holding a stale copy of the same runner config, and nothing references it — the
+  # HelmRelease consumes `forgejo-runner-configmap` from the configMapGenerator below.
+  # Enabling it would ship a second, silently-unused config.
+  # - configmap.yaml
+  - externalsecret.yaml
+configMapGenerator:
+  - name: forgejo-runner-configmap
+    files:
+      - ./resources/config.yaml
+# disableNameSuffixHash matches the pattern used elsewhere in this repo (e.g.
+# apps/comms/gotosocial). The previous approach — a `nameReference` fieldSpec in
+# resources/kustomizeconfig.yaml, meant to rewrite the hashed name into the
+# HelmRelease — silently does not work: kustomize v5.8.1 leaves the release pointing
+# at the unhashed `forgejo-runner-configmap` while generating
+# `forgejo-runner-configmap-<hash>`, so the pod would mount a ConfigMap that does not
+# exist and never start. Verified by building this kustomization directly.
+# Trade-off: without the hash, editing resources/config.yaml no longer changes the
+# ConfigMap name and so will not roll the StatefulSet by itself — the controller
+# carries a reloader annotation to cover that.
+generatorOptions:
+  disableNameSuffixHash: true

@@ -1,0 +1,210 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserver_v1beta1.json
+#
+# CalDAV calendar MCP backend for Jonathon's secretary profile (#1551).
+#
+# Upstream: github.com/pi0n00r/nextcloud-mcp-server (AGPL-3.0), a maintained
+# fork of cbcoutinho/nextcloud-mcp-server. It speaks CalDAV/CardDAV/WebDAV/OCS
+# against an existing Nextcloud instance and ships a multi-arch (amd64/arm64)
+# image. Everything below was verified against the pinned digest by running it
+# locally — see CALDAV-CARDDAV.md for the verification transcript.
+#
+# The same image also backs `carddav.yaml`. They are deliberately two separate
+# MCPServers rather than one:
+#   * the epic (#1547) gives Carol/coach CardDAV *without* CalDAV, which needs
+#     two Cedar prefixes to express;
+#   * `--enable-app` (below) means this pod never registers a contacts tool at
+#     all, so the calendar credential cannot reach the address book even if a
+#     Cedar policy were mis-edited;
+#   * the two backends carry separate Nextcloud app passwords, so either can be
+#     revoked in Nextcloud without disturbing the other.
+#
+# Tool surface is narrowed in three independent layers, outermost last:
+#   1. `--enable-app calendar` — the server process registers only the calendar
+#      module's 18 tools. Verified: `tools/list` on the running image returns
+#      exactly those 18 and nothing from files/mail/deck/talk/notes.
+#   2. `toolsFilter` in the MCPToolConfig below — 9 of those 18 reach the VMCP.
+#   3. Cedar permits in authzconfig.yaml — only toolhive-secretary may call them.
+# Note that layer 3 alone is not a surface reduction: `tools/list` on the
+# unified VMCP is not filtered per profile (see OIDC.md), so layers 1 and 2 are
+# what keep the excluded tools out of every profile's view.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: caldav
+spec:
+  # Pinned to the multi-architecture release index digest (linux/amd64 +
+  # linux/arm64). Upstream publishes exact release tags only and deliberately
+  # ships no floating `latest`.
+  image: ghcr.io/pi0n00r/nextcloud-mcp-server:v1.8.1@sha256:0984b2a0a2a5546fc8ef188282ad2c8a78070c823d92977e40d3fc9766ca677b
+  transport: streamable-http
+  mcpPort: &port 8000
+  groupRef:
+    name: all
+  # Appended to the image ENTRYPOINT
+  # (`nextcloud-mcp-server run --host :: --dual-stack`), which declares no CMD.
+  # `--enable-app` is a repeatable CLI flag with no environment-variable form,
+  # so it has to be passed as an argument. Valid keys are the AVAILABLE_APPS
+  # names: notes, tables, webdav, sharing, calendar, collectives, contacts,
+  # cookbook, deck, news, mail, talk. Omitting the flag enables all 164 tools.
+  args:
+    - --enable-app
+    - calendar
+  env:
+    # Public hostname rather than nextcloud2.office.svc.cluster.local, matching
+    # the joplin backend: internal DNS resolves it to the internal gateway, so
+    # the traffic stays in-cluster, and it is the only value guaranteed to be in
+    # Nextcloud's `trusted_domains` (see apps/office/nextcloud helm-release.yaml).
+    # The Coraza WAF is attached to the towonel gateway only and already carries
+    # DAV carve-outs (900202/900310), so neither path inspects these requests
+    # into failure.
+    - name: NEXTCLOUD_HOST
+      value: https://cloud.${SECRET_ROOT_DOMAIN}
+    # Explicit rather than relying on auto-detection from the credential vars.
+    - name: MCP_DEPLOYMENT_MODE
+      value: single_user_basic
+    # The operator mounts a read-only root filesystem, so every writable path
+    # has to be an explicit volume. Without these the SQLite session store lands
+    # on a per-process tempfile under an unwritable TMPDIR.
+    - name: TMPDIR
+      value: /tmp
+    - name: TOKEN_STORAGE_DB
+      value: /tmp/nextcloud-mcp-tokens.db
+    # Semantic search pulls in Qdrant + an embedding endpoint and registers a
+    # further cross-app tool group. Neither is wanted here; left off explicitly
+    # so a future default flip cannot widen the surface silently.
+    - name: ENABLE_SEMANTIC_SEARCH
+      value: "false"
+  toolConfigRef:
+    name: caldav
+  podTemplateSpec:
+    spec:
+      # No securityContext here: the operator applies its own to every MCPServer
+      # (runAsUser/runAsGroup/fsGroup 1000, runAsNonRoot, readOnlyRootFilesystem,
+      # drop ALL). The image already runs as uid 1000/gid 0, so it lands on its
+      # own files. Verified by running the pinned digest with --read-only
+      # --user 1000:0 and the two tmpfs mounts below.
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+        # WORKDIR is /app and the image pre-creates /app/data (chown 1000:0) for
+        # mutable runtime state. It is part of the image layer, so it is
+        # read-only at runtime without this.
+        - name: data
+          emptyDir:
+            sizeLimit: 64Mi
+      containers:
+        - name: mcp
+          # Two separate keys from one Secret, which spec.secrets cannot express:
+          # it is a list keyed by secret name, so only one entry per Secret is
+          # allowed there. Same workaround as the joplin backend.
+          env:
+            - name: NEXTCLOUD_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-secrets
+                  key: NEXTCLOUD_CALDAV_USERNAME
+            - name: NEXTCLOUD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-secrets
+                  key: NEXTCLOUD_CALDAV_APP_PASSWORD
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /app/data
+          ports:
+            - name: mcp
+              containerPort: *port
+          # /health/live returns 200 as soon as the process is up and checks no
+          # external dependency, so it never restarts the pod on a Nextcloud
+          # blip. /health/ready gates only on local configuration; Nextcloud
+          # reachability is reported in the body but is deliberately
+          # non-gating upstream, so a Nextcloud outage degrades tools rather
+          # than pulling the only replica out of its Service.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: mcp
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: mcp
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              # Measured 325Mi RSS idle from the pinned digest with the calendar
+              # module loaded; the request covers steady state and the limit
+              # leaves room for a large multi-calendar REPORT.
+              memory: 384Mi
+              # The `ai` LimitRange defaults every container to a 64Mi
+              # ephemeral-storage limit, which the emptyDirs above count
+              # against. Declare the real need instead of being evicted.
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 768Mi
+              ephemeral-storage: 256Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 100Mi
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcptoolconfig_v1beta1.json
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPToolConfig
+metadata:
+  name: caldav
+spec:
+  # Allow-list. Names are the raw tool names as registered by the server; the
+  # VirtualMCPServer prepends the MCPServer name, so the Cedar forms in
+  # authzconfig.yaml are caldav_nc_calendar_*.
+  #
+  # Read/write boundary — the upstream ToolAnnotations are already correct and
+  # pass through to the client unmodified, so they are not overridden here:
+  #   read      readOnlyHint=true    list_calendars, list_events, get_event,
+  #                                  get_upcoming_events, find_availability
+  #   write     (no read-only hint)  create_event, update_event, create_meeting
+  #   destroy   destructiveHint=true delete_event
+  #
+  # Deliberately excluded from the 18 the server registers:
+  #   nc_calendar_manage_calendar  — creates and deletes whole calendar
+  #     collections. A secretary schedules within calendars; it has no business
+  #     restructuring them, and a deletion here takes every event with it.
+  #   nc_calendar_bulk_operations  — filter-matched mass update/delete. The
+  #     blast radius is whatever the model's filter happens to match, which is
+  #     exactly the failure mode the per-event tools make impossible.
+  #   the 7 VTODO/task tools (list_todos, get_todo, create_todo, update_todo,
+  #     complete_todo, delete_todo, search_todos) — tasks are a distinct surface
+  #     from calendar events and this profile's list-shaped work is already
+  #     served by the Koffan backend. Uncomment the block below to add them; the
+  #     matching Cedar permits go in authzconfig.yaml under toolhive-secretary.
+  toolsFilter:
+    # --- read ---
+    - nc_calendar_list_calendars
+    - nc_calendar_list_events
+    - nc_calendar_get_event
+    - nc_calendar_get_upcoming_events
+    - nc_calendar_find_availability
+    # --- write ---
+    - nc_calendar_create_event
+    - nc_calendar_update_event
+    - nc_calendar_create_meeting
+    # --- destructive (single event, ETag/iMIP guarded upstream) ---
+    - nc_calendar_delete_event
+    # --- VTODO/tasks: out of scope for #1551, enable deliberately ---
+    # - nc_calendar_list_todos
+    # - nc_calendar_get_todo
+    # - nc_calendar_search_todos
+    # - nc_calendar_create_todo
+    # - nc_calendar_update_todo
+    # - nc_calendar_complete_todo
+    # - nc_calendar_delete_todo

@@ -1,0 +1,56 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/dragonflydb.io/dragonfly_v1alpha1.json
+apiVersion: dragonflydb.io/v1alpha1
+kind: Dragonfly
+metadata:
+  name: ${APP}-dragonfly
+spec:
+  image: ghcr.io/dragonflydb/dragonfly:v1.40.1
+  replicas: ${DRAGONFLY_REPLICAS:-1}
+  networkPolicyEnabled: false
+  env:
+    - name: MAX_MEMORY
+      valueFrom:
+        resourceFieldRef:
+          resource: limits.memory
+          divisor: 1Mi
+  args:
+    - --maxmemory=$(MAX_MEMORY)Mi
+    - --proactor_threads=2
+    - --cluster_mode=emulated
+    - --lock_on_hashtags
+    - --default_lua_flags=allow-undeclared-keys
+  # CPU from 7d of Prometheus data across all 10 dragonfly instances: p95 ranges
+  # 12m-22m, so 25m covers the busiest with headroom. This template is shared —
+  # one edit moves every cache. The memory limit stays: MAX_MEMORY above is
+  # derived from it, and --maxmemory depends on that.
+  resources:
+    requests:
+      cpu: 25m
+    limits:
+      memory: 512Mi
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: "kubernetes.io/hostname"
+      whenUnsatisfiable: "DoNotSchedule"
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: dragonfly
+  # muspelheim's etcd WAL sits on a DRAM-less Crucial BX500 sharing one LVM VG
+  # with the Longhorn replica store, so co-resident disk writers stall etcd
+  # commits. Dragonfly holds its dataset in memory but still snapshots to the
+  # container filesystem, i.e. to that same node disk.
+  #
+  # Hard rule, and safe as one: no dragonfly instance has a PVC, so nothing pins
+  # a pod to a node and the four remaining nodes are all valid targets. As with
+  # the resources block above, this template is shared — it moves every cache,
+  # not just the one that happened to land on muspelheim.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                  - muspelheim

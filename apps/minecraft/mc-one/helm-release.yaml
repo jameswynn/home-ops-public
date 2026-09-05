@@ -1,0 +1,90 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: mc-one
+  namespace: minecraft
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: minecraft
+  values:
+    image:
+      repository: ghcr.io/itzg/minecraft-server
+      tag: 2026.8.1
+    strategyType: Recreate
+    persistence:
+      storageClass: "longhorn"
+      dataDir:
+        enabled: true
+        Size: 10Gi
+    podSecurityContext:
+      runAsUser: 1000
+      runAsGroup: 1000
+      runAsNonRoot: true
+      fsGroup: 1000
+    resources:
+      requests:
+        memory: 9Gi
+        cpu: 500m
+      limits:
+        memory: 9Gi
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 5
+      failureThreshold: 10
+      successThreshold: 1
+      timeoutSeconds: 1
+    readinessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 5
+      failureThreshold: 10
+      successThreshold: 1
+      timeoutSeconds: 1
+    startupProbe:
+      enabled: true
+      failureThreshold: 30
+      periodSeconds: 10
+    extraEnv:
+      ENABLE_AUTOPAUSE: FALSE
+      MOD_PLATFORM: AUTO_CURSEFORGE
+    minecraftServer:
+      autoCurseForge:
+        apiKey:
+          key: "$2a$10$vcrXni8aBEeVo6MyzkKkn.26tvYCJfZdUytkgHiK7s2peRXUhcswa"
+        slug: "dungeon-heroes"
+      spigetResources:
+        - 28140
+        - 74354
+        - 102931
+      modUrls:
+        - https://github.com/EssentialsX/Essentials/releases/download/2.20.1/EssentialsX-2.20.1.jar
+        - https://cdn.modrinth.com/data/Lu3KuzdV/versions/w3P6ufP1/CoreProtect-22.2.jar
+      eula: true
+      version: "LATEST"
+      type: PAPER
+      forceReDownload: true
+      jvmOpts: "-Xms8G -Xmx8G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1 -Dusing.aikars.flags=https://mcflags.emc.gs -Daikars.new.flags=true"
+      memory: 8192M
+      difficulty: normal
+      spawnProtection: 0
+      maxTickTime: -1
+      serviceType: LoadBalancer
+      gameMode: survival
+      pvp: false
+      onlineMode: false
+      maxWorldSize: 5999968
+      #worldSaveName: 'trails-20230610-13'
+      worldSaveName: "walker20231022"
+      levelSeed: "walker20231022"
+      motd: "New Server
+
+        §6§lSMPl§r§l - §r§c§lSMP§r\n"
+      icon: https://www.freeiconspng.com/uploads/minecraft-server-icon-23.png
+      loadBalancerIP: ${SVC_MINECRAFT_ONE_ADDR}
+      rcon:
+        enabled: false
+        port: 25575
+        password: "mc-rcon-2024"
+        serviceType: LoadBalancer

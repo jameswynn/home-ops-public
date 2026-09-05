@@ -1,0 +1,177 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: authentik
+spec:
+  interval: 1h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 2026.8.0
+  url: oci://ghcr.io/goauthentik/helm-charts/authentik
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app authentik
+  namespace: &namespace authentik
+spec:
+  interval: 5m
+  releaseName: authentik
+  chartRef:
+    kind: OCIRepository
+    name: authentik
+  install:
+    createNamespace: true
+  values:
+    global:
+      storageClass: longhorn
+      image:
+        repository: ghcr.io/goauthentik/server
+        tag: 2026.8.0
+      # env:
+      #   - name: AUTHENTIK_DEBUG
+      #     value: "true"
+      deploymentStrategy:
+        type: RollingUpdate
+      # Keep authentik off the coral-tpu node (nidavellir). That node is the only
+      # one that can run frigate, and frigate's 1000m request leaves it with the
+      # least CPU headroom in the cluster. `podAntiAffinity: soft` is the chart
+      # default and is preserved — the two server replicas still prefer separate
+      # nodes. authentik is stateless (state lives in Postgres + a RWX longhorn
+      # volume), so this is a rolling move with no downtime.
+      affinity:
+        nodeAffinity:
+          matchExpressions:
+            - key: feature.node.kubernetes.io/coral-tpu
+              operator: DoesNotExist
+
+    authentik:
+      # log_level: debug
+      # secret_key: ${SECRET_AUTHENTIK_SECRET_KEY}
+      # This sends anonymous usage-data, stack traces on errors and
+      # performance data to sentry.beryju.org, and is fully opt-in
+      error_reporting:
+        enabled: false
+      postgresql:
+        host: ${SVC_POSTGRES_HOST}
+        name: authentik
+        user: authentik
+        # password: ${SECRET_AUTHENTIK_POSTGRESQL_PASSWORD}
+      email:
+        host: smtp.comms.svc.cluster.local
+        port: 25
+        from: Wynning Tech Auth <no-reply@${SECRET_ROOT_DOMAIN}>
+
+    server:
+      replicas: 2
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: "OnRootMismatch"
+      autoscaling:
+        enabled: false
+        minReplicas: 1
+      resources:
+        requests:
+          memory: 500Mi
+          cpu: 200m
+          ephemeral-storage: 100Mi
+        limits:
+          memory: 1000Mi
+          # cpu: 1000m
+          ephemeral-storage: 200Mi
+
+      volumes:
+        - name: custom-resources
+          persistentVolumeClaim:
+            claimName: authentik-resources
+        - name: email-templates
+          configMap:
+            name: authentik-templates
+      volumeMounts:
+        - name: custom-resources
+          mountPath: /media
+        - name: email-templates
+          mountPath: /templates
+
+      livenessProbe:
+        timeoutSeconds: 5
+      readinessProbe:
+        timeoutSeconds: 5
+      startupProbe:
+        timeoutSeconds: 5
+      metrics:
+        prometheus:
+          serviceMonitor:
+            enabled: true
+
+      route:
+        main:
+          enabled: true
+          annotations:
+            gethomepage.dev/enabled: "true"
+            gethomepage.dev/name: "Authentik"
+            gethomepage.dev/description: "SSO for the Home"
+            gethomepage.dev/group: "Security"
+            gethomepage.dev/icon: "authentik.png"
+            gethomepage.dev/weight: "10"
+            gethomepage.dev/pod-selector: "app.kubernetes.io/name = authentik"
+            external-dns.alpha.kubernetes.io/hostname: "auth.${SECRET_ROOT_DOMAIN}"
+            internal.wynning.tech/hostname: "auth.${SECRET_ROOT_DOMAIN}"
+            gatus.home-operations.com/endpoint: |
+              url: https://auth.${SECRET_ROOT_DOMAIN}/-/health/ready/
+          hostnames:
+            - "auth.${SECRET_ROOT_DOMAIN}"
+          parentRefs:
+            - name: envoy-towonel
+              namespace: networking
+            - name: envoy-internal
+              namespace: networking
+          additionalRules:
+            - backendRefs:
+                - name: ak-outpost-authentik-embedded-outpost
+                  port: 9000
+              matches:
+                - path:
+                    type: PathPrefix
+                    value: /outpost.goauthentik.io
+
+    worker:
+      replicas: 2
+      autoscaling:
+        enabled: false
+        minReplicas: 1
+      # CPU from 7d of Prometheus data: p50 84.8m, p95 88.4m, max 116m per
+      # replica — the worker runs a steady task loop rather than bursting, so
+      # the p95 is close to the real cost. 250m per replica (2 replicas).
+      # No CPU limit, per the cluster convention: throttling the worker backs
+      # up the task queue and stalls flows and outpost syncs.
+      resources:
+        requests:
+          memory: 500Mi
+          cpu: 250m
+          ephemeral-storage: 100Mi
+        limits:
+          memory: 1000Mi
+          ephemeral-storage: 200Mi
+
+    postgresql:
+      enabled: false
+
+    redis:
+      enabled: false
+  valuesFrom:
+    - kind: Secret
+      name: &secret authentik-secrets
+      valuesKey: SECRET_KEY
+      targetPath: authentik.secret_key
+    - kind: Secret
+      name: *secret
+      valuesKey: POSTGRESQL_PASSWORD
+      targetPath: authentik.postgresql.password

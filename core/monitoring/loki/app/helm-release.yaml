@@ -1,0 +1,272 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: loki
+spec:
+  interval: 5m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 18.9.0
+  url: oci://ghcr.io/grafana-community/helm-charts/loki
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: loki
+  namespace: monitoring
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: loki
+  values:
+    deploymentMode: SimpleScalable
+
+    loki:
+      podAnnotations:
+        secret.reloader.stakater.com/reload: loki-secrets
+
+      auth_enabled: false
+
+      analytics:
+        reporting_enabled: false
+
+      compactor:
+        delete_request_store: s3
+        working_directory: /var/loki/compactor/retention
+        # shared_store: s3
+        # compaction_interval: 10m
+        retention_enabled: true
+        # retention_delete_delay: 2h
+        # retention_delete_worker_count: 150
+
+      frontend:
+        max_outstanding_per_tenant: 4096
+
+      ingester:
+        chunk_encoding: snappy
+
+      commonConfig:
+        replication_factor: 2
+
+      limits_config:
+        ingestion_burst_size_mb: 128
+        ingestion_rate_mb: 64
+        max_query_parallelism: 100
+        # Truncate over-long lines instead of rejecting the push. Without this,
+        # a single oversized entry 400s the whole batch, and Alloy then drops
+        # every line in it — measured at ~2600 unrelated log lines lost per
+        # event. Truncating keeps the first 256KB and everything around it.
+        max_line_size_truncate: true
+        max_line_size_truncate_identifier: "[truncated by loki]"
+        per_stream_rate_limit: 64M
+        per_stream_rate_limit_burst: 128M
+        reject_old_samples: true
+        reject_old_samples_max_age: 168h
+        retention_period: 7d
+        shard_streams:
+          enabled: true
+        split_queries_by_interval: 1h
+
+      query_scheduler:
+        max_outstanding_requests_per_tenant: 4096
+
+      rulerConfig:
+        enable_api: true
+        enable_alertmanager_v2: true
+        alertmanager_url: http://kube-prometheus-stack-alertmanager:9093
+        storage:
+          type: local
+          local:
+            directory: /rules
+        rule_path: /rules/fake
+
+      schemaConfig:
+        configs:
+          - from: "2024-08-01"
+            store: tsdb
+            object_store: s3
+            schema: v13
+            index:
+              prefix: loki_index_
+              period: 24h
+
+      server:
+        log_level: info
+        grpc_server_max_recv_msg_size: 8388608
+        grpc_server_max_send_msg_size: 8388608
+
+      storage:
+        type: s3
+        bucketNames:
+          chunks: loki-chunks
+          # ruler: loki-ruler
+          # admin: loki-admin
+        s3:
+          s3ForcePathStyle: true
+          region: garage
+          endpoint: https://${SECRET_GARAGE_URL}
+
+    gateway:
+      enabled: true
+      replicas: 2
+      # Reachable on the tailnet as loki.<tailnet>, for the CrowdSec agent on the
+      # heimdall VPS, which tails Envoy access logs from here to detect scrapers
+      # (see docker/vps/03-crowdsec). Deliberately the tailscale-operator proxy
+      # rather than an envoy-internal HTTPRoute: the Loki gateway has no auth at
+      # all, so this keeps it off the LAN and reachable only from the tailnet.
+      service:
+        annotations:
+          tailscale.com/expose: "true"
+          tailscale.com/hostname: "loki"
+      tolerations:
+        - key: "arm"
+          operator: "Exists"
+          effect: "NoSchedule"
+      image:
+        registry: ghcr.io
+        repository: nginxinc/nginx-unprivileged
+        tag: 1.27-alpine
+      deploymentStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxUnavailable: 50%
+          maxSurge: 50%
+      # CPU from 7d of Prometheus data: p50 3.9m, p95 6.2m, max 13.7m. An nginx
+      # reverse proxy in front of read/write — almost no work of its own.
+      # 25m is the practical request floor. No CPU limit, per the cluster
+      # convention.
+      resources:
+        requests:
+          cpu: 25m
+          memory: 100Mi
+          ephemeral-storage: 100Mi
+        limits:
+          memory: 200Mi
+          ephemeral-storage: 200Mi
+    write:
+      replicas: 2
+      # CPU from 7d of Prometheus data: p50 26.2m, p95 29.4m, max 160m. The
+      # busiest Loki component — steady ingest with WAL-flush spikes. 100m
+      # covers p95 ~3x and most of the flush tail. No CPU limit, per the
+      # cluster convention.
+      resources:
+        requests:
+          cpu: 100m
+          memory: 200Mi
+          ephemeral-storage: 100Mi
+        limits:
+          memory: 2000Mi
+          ephemeral-storage: 200Mi
+      persistence:
+        storageClass: local-path
+    read:
+      replicas: 2
+      # CPU from 7d of Prometheus data: p50 14.3m, p95 16.6m, max 121.6m. Idles
+      # between queries, then spikes while a Grafana/LogQL query fans out.
+      # No CPU limit, per the cluster convention.
+      resources:
+        requests:
+          cpu: 50m
+          memory: 200Mi
+          ephemeral-storage: 100Mi
+        limits:
+          memory: 300Mi
+          ephemeral-storage: 200Mi
+      persistence:
+        storageClass: local-path
+
+    backend:
+      replicas: 2
+      # CPU from 7d of Prometheus data: p50 12.5m, p95 15.1m, max 19.0m —
+      # compactor/ruler work, the flattest profile of the three. No CPU limit,
+      # per the cluster convention.
+      resources:
+        requests:
+          cpu: 50m
+          memory: 200Mi
+          ephemeral-storage: 100Mi
+        limits:
+          memory: 500Mi
+          ephemeral-storage: 200Mi
+      persistence:
+        storageClass: local-path
+
+    # The two memcached caches are chart-managed and were skipped by the CPU
+    # right-sizing batches: the chart's `allocatedCPU` default is 500m each, a
+    # full core of the cluster's committed requests for pods that idle. CPU from
+    # 7d of Prometheus data: chunks-cache p95 9.0m, results-cache p95 4.2m —
+    # memcached is memory-bound, it does almost no CPU work.
+    #
+    # `allocatedCPU` feeds ONLY requests.cpu in the memcached StatefulSet
+    # template; memory requests/limits are derived from `allocatedMemory`
+    # (round(allocatedMemory * 1.2)) and must stay where they are — these caches
+    # are sized by memory on purpose. Trim CPU only.
+    #
+    # chunks-cache also gets pushed off muspelheim: that node's etcd WAL shares
+    # one LVM VG with the Longhorn replica store on a DRAM-less Crucial BX500,
+    # and memcached at this size churns enough page cache to matter. Hard rule
+    # rather than soft because the memcached StatefulSet has no PVC at all — the
+    # chart gives chunksCache no persistence option and renders no
+    # volumeClaimTemplate — so nothing pins the pod and it reschedules cleanly
+    # onto any of the other four nodes.
+    chunksCache:
+      allocatedCPU: 25m
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - muspelheim
+    resultsCache:
+      allocatedCPU: 25m
+
+    monitoring:
+      dashboards:
+        annotations:
+          grafana_folder: Loki
+          # kustomize.toolkit.fluxcd.io/substitute: disabled
+          # labels:
+          #   grafana_dashboard: "true"
+
+    sidecar:
+      image:
+        registry: ghcr.io
+        repository: kiwigrid/k8s-sidecar
+      rules:
+        searchNamespace: ALL
+        folder: /rules/fake
+
+    lokiCanary:
+      enabled: false
+
+    test:
+      enabled: false
+
+    resources:
+      requests:
+        cpu: 10m
+        memory: 500Mi
+        ephemeral-storage: 100Mi
+      limits:
+        cpu: 200m
+        memory: 500Mi
+        ephemeral-storage: 200Mi
+
+  valuesFrom:
+    - kind: Secret
+      name: loki-garage
+      valuesKey: GARAGE_ACCESS_KEY
+      targetPath: loki.storage.s3.accessKeyId
+    - kind: Secret
+      name: loki-garage
+      valuesKey: GARAGE_SECRET_KEY
+      targetPath: loki.storage.s3.secretAccessKey

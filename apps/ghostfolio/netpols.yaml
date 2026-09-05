@@ -1,0 +1,73 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: ghostfolio-namespace-policy
+  namespace: ghostfolio
+spec:
+  endpointSelector: {}
+  ingress:
+    # Allow ingress from internal envoy-gateway in the networking namespace
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.networking.k8s.io/gateway-name: envoy-internal
+            # This label must exist on the namespace object itself
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Allow intra-namespace traffic (pod-to-pod within ghostfolio)
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": ghostfolio
+
+    # Allow ingress from prometheus
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: prometheus
+            # This label must exist on the namespace object itself
+            "k8s:io.kubernetes.pod.namespace": monitoring
+
+  egress:
+    # Allow intra-namespace traffic
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": ghostfolio
+
+    # Allow default postgres cluster
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": default
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # Allow the smtp relay in comms, for ghostrecon's notifications. Without
+    # this every send times out and the only sign is the failure counter —
+    # which is itself the silence notifications exist to fix.
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": comms
+            app.kubernetes.io/name: smtp-relay
+      toPorts:
+        - ports:
+            - port: "25"
+              protocol: TCP
+
+    # Allow DNS
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow internet egress
+    - toEntities:
+        - world

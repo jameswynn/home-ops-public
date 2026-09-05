@@ -1,0 +1,61 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    "docker:enableMajor",
+    // "helpers:pinGitHubActionDigests",
+    ':enablePreCommit',
+    ':automergeDigest',
+    ':automergeBranch',
+    'local>james/home-ops//.renovate/autoMerge.json5',
+    'local>james/home-ops//.renovate/customManagers.json5',
+    'local>james/home-ops//.renovate/grafanaDashboards.json5',
+    'local>james/home-ops//.renovate/groups.json5',
+    'local>james/home-ops//.renovate/labels.json5',
+    'local>james/home-ops//.renovate/postgres.json5',
+    'local>james/home-ops//.renovate/semanticCommits.json5',
+    ":automergeBranch",
+    ":disableRateLimiting",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":timezone(America/Chicago)",
+  ],
+  dependencyDashboardTitle: "Renovate Dashboard 🤖",
+  packageRules: [
+    {
+      description: "Allow updates from registries without release timestamps",
+      matchPackageNames: ["*"],
+      minimumReleaseAge: "3 days",
+      minimumReleaseAgeBehaviour: "timestamp-optional",
+    },
+  ],
+  suppressNotifications: [
+    "prEditedNotification",
+    "prIgnoreNotification",
+  ],
+  rebaseWhen: 'conflicted',
+  ignorePaths: [
+    "**/resources/**",
+    ".claude/skills/new-app",
+  ],
+  flux: {
+    managerFilePatterns: ["/\\.yaml(?:\\.j2)?$/"],
+  },
+  packageRules: [
+    {
+      description: "Let the OCI regex manager own Flux OCIRepository charts",
+      matchManagers: ["flux"],
+      matchDatasources: ["docker"],
+      enabled: false,
+    },
+  ],
+  "helm-values": {
+    managerFilePatterns: ["/\\.yaml(?:\\.j2)?$/"],
+  },
+  kubernetes: {
+    managerFilePatterns: ["/\\.yaml(?:\\.j2)?$/"],
+  },
+  registryAliases: {
+    "mirror.gcr.io": "docker.io",
+  },
+}

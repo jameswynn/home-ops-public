@@ -1,0 +1,408 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: home-assistant
+  namespace: home
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  install:
+    timeout: 10m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 10m
+    remediation:
+      retries: 3
+  values:
+    controllers:
+      app:
+        pod:
+          # this is necessary to discover devices on the network
+          #hostNetwork: true
+          # securityContext:
+          #   runAsUser: 1000
+          #   runAsGroup: 1000
+          #   fsGroup: 1000
+          #   fsGroupChangePolicy: 'OnRootMismatch'
+          nodeSelector:
+            kubernetes.io/arch: "amd64"
+          annotations:
+            k8s.v1.cni.cncf.io/networks: |
+              [{
+                "name":"multus-iot",
+                "namespace": "networking",
+                "ips": ["10.3.0.154/24"],
+                "mac": "92:cf:d7:05:70:86",
+                "routes": [{"dst": "10.3.0.0/24", "gw": "10.3.0.1", "metric": 1000}]
+              }]
+
+        containers:
+          main:
+            image:
+              repository: ghcr.io/home-assistant/home-assistant
+              tag: 2026.8.2
+
+            env:
+              TZ: ${CLUSTER_TZ}
+              PYTHONPATH: /config/deps
+            # CPU from 7d of Prometheus data: p50 9m, p95 14.4m, max 564m (609m
+            # over 30d — the max is startup/recorder purge). Sized at 50m rather
+            # than the 25m floor because this is the busiest container in the
+            # batch and it runs the house. No CPU limit, per the cluster
+            # convention: automations should never wait on a quota.
+            resources:
+              requests:
+                memory: 100Mi
+                cpu: 50m
+                ephemeral-storage: 200Mi
+              limits:
+                memory: 6000Mi
+                ephemeral-storage: 200Mi
+            probes:
+              startup:
+                enabled: false
+              liveness:
+                enabled: false
+              readiness:
+                enabled: false
+
+          # Configure the code-server sidecar
+          code:
+            dependsOn: main
+            image:
+              # -- image repository
+              repository: ghcr.io/coder/code-server
+              # -- image tag
+              # this example is not automatically updated, so be sure to use the latest image
+              tag: 4.133.0
+            args:
+              - --auth
+              - "none"
+              - --user-data-dir
+              - "/config/.vscode"
+              - --extensions-dir
+              - "/config/.vscode"
+              - --port
+              - "8081"
+              - "/config"
+
+      wyoming-piper:
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: 'OnRootMismatch'
+          nodeSelector:
+            kubernetes.io/arch: "amd64"
+        containers:
+          main:
+            image:
+              repository: mirror.gcr.io/rhasspy/wyoming-piper
+              tag: 2.4.2
+            args:
+              - "--voice"
+              - "en-gb-southern_english_female-low"
+              - "--noise-w"
+              - "0.8"
+            resources:
+              requests:
+                memory: 300Mi
+                cpu: 10m
+              limits:
+                memory: 1000Mi
+                #cpu: 1000m
+
+      # A second Piper sidecar dedicated to the GLaDOS voice. --length-scale and
+      # --sentence-silence are process-global, not per-voice, so tuning them here keeps
+      # en-gb-southern_english_female-low unchanged for every other pipeline.
+      wyoming-piper-glados:
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: 'OnRootMismatch'
+          nodeSelector:
+            kubernetes.io/arch: "amd64"
+        initContainers:
+          # wyoming-piper advertises a custom voice using the `dataset` field from the
+          # .onnx.json but resolves the request back to <name>.onnx on disk. Upstream
+          # ships `"dataset": ""`, and the read is a .get(), so the filename fallback
+          # never fires and HA advertises a nameless, unresolvable voice. `dataset` must
+          # equal the .onnx filename stem exactly.
+          fetch-glados-voice:
+            image:
+              repository: docker.io/curlimages/curl
+              tag: 8.21.0
+            command:
+              - "sh"
+              - "-c"
+            args:
+              - |
+                set -eu
+                V=/data/en_US-glados-medium
+                if [ ! -f "$V.onnx" ]; then
+                  echo "downloading GLaDOS voice model (~63MB)..."
+                  curl -fsSL -o "$V.onnx.tmp" \
+                    https://huggingface.co/DavesArmoury/GLaDOS_TTS/resolve/main/glados_piper_medium.onnx
+                  mv "$V.onnx.tmp" "$V.onnx"
+                fi
+                # Always rewrite the config: cheap, and it keeps the dataset fix idempotent.
+                curl -fsSL \
+                  https://huggingface.co/DavesArmoury/GLaDOS_TTS/resolve/main/glados_piper_medium.onnx.json \
+                  | sed 's/"dataset"[[:space:]]*:[[:space:]]*""/"dataset": "en_US-glados-medium"/' \
+                  > "$V.onnx.json"
+                grep -q '"dataset": "en_US-glados-medium"' "$V.onnx.json" \
+                  || { echo "dataset patch failed — voice will not resolve in HA"; exit 1; }
+                echo "GLaDOS voice ready"
+        containers:
+          main:
+            image:
+              repository: mirror.gcr.io/rhasspy/wyoming-piper
+              tag: 2.4.2
+            args:
+              - "--voice"
+              - "en_US-glados-medium"
+              # Slower, more deliberate delivery. Tune to taste after auditioning.
+              - "--length-scale"
+              - "1.15"
+              - "--sentence-silence"
+              - "0.4"
+              - "--noise-w"
+              - "0.8"
+            resources:
+              requests:
+                memory: 300Mi
+                cpu: 10m
+              limits:
+                memory: 1000Mi
+                #cpu: 1000m
+
+      wyoming-whisper:
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: 'OnRootMismatch'
+          nodeSelector:
+            kubernetes.io/arch: "amd64"
+        containers:
+          main:
+            image:
+              repository: mirror.gcr.io/rhasspy/wyoming-whisper
+              tag: 3.6.0
+
+            args:
+              - "--model"
+              - "tiny.en"
+              - "--language"
+              - "en"
+            # CPU from 7d of Prometheus data: p50 0m, p95 0m, p99 1.5m, max
+            # 11.3m — idle except during an STT request. 25m is the practical
+            # request floor. No CPU limit, per the cluster convention;
+            # transcription latency is user-visible, so don't throttle it.
+            resources:
+              requests:
+                memory: 1000Mi
+                cpu: 25m
+              limits:
+                memory: 2000Mi
+
+      wyoming-openwakeword:
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: 'OnRootMismatch'
+          nodeSelector:
+            kubernetes.io/arch: "amd64"
+        containers:
+          main:
+            image:
+              repository: mirror.gcr.io/rhasspy/wyoming-openwakeword
+              tag: 2.1.0
+
+            # args:
+            #   - "--preload-model"
+            #   - "okay_nabu"
+
+            # CPU from 7d of Prometheus data: p50/p95/max all 0m — this
+            # container has been up 7d and burned no measurable CPU, so there is
+            # nothing to size against; 25m is the practical request floor. No
+            # CPU limit, per the cluster convention.
+            resources:
+              requests:
+                memory: 1000Mi
+                cpu: 25m
+              limits:
+                memory: 2000Mi
+
+    persistence:
+      config:
+        enabled: true
+        existingClaim: home-assistant-config
+        advancedMounts:
+          app:
+            main:
+              - path: /config
+            code:
+              - path: /config
+
+      wyoming-piper-data:
+        enabled: true
+        existingClaim: home-assistant-wyoming-piper-data
+        advancedMounts:
+          wyoming-piper:
+            main:
+              - path: /data
+      wyoming-piper-glados-data:
+        enabled: true
+        existingClaim: home-assistant-wyoming-piper-glados-data
+        advancedMounts:
+          wyoming-piper-glados:
+            main:
+              - path: /data
+            fetch-glados-voice:
+              - path: /data
+      wyoming-whisper-data:
+        enabled: true
+        existingClaim: home-assistant-wyoming-whisper-data
+        advancedMounts:
+          wyoming-whisper:
+            main:
+              - path: /data
+      wyoming-whisper-cache:
+        enabled: true
+        existingClaim: home-assistant-wyoming-whisper-cache
+        advancedMounts:
+          wyoming-whisper:
+            main:
+              - path: /.cache
+
+    service:
+      # TODO: billimek has two of services, one presumably for discovery and communication, and one for use by the web
+      # https://github.com/billimek/k8s-gitops/blob/master/kubernetes/default/home-assistant/home-assistant.yaml
+      # main:
+      #   primary: true
+      #   forceRename: home-assistant
+      #   type: LoadBalancer
+      #   controller: home-assistant
+      #   loadBalancerIP: 10.0.6.56
+      #   externalTrafficPolicy: Local
+      #   ports:
+      #     http:
+      #       port: 8123
+
+      main:
+        controller: app
+        enabled: true
+        ports:
+          http:
+            port: 8123
+
+      code:
+        type: ClusterIP
+        controller: app
+        ports:
+          http:
+            port: 8081
+
+      wyoming-piper:
+        controller: wyoming-piper
+        type: LoadBalancer
+        loadBalancerIP: ${SVC_WYOMING_PIPER_ADDR}
+        annotations:
+          internal.wynning.tech/hostname: "piper.${SECRET_INTERNAL_DOMAIN}"
+        ports:
+          http:
+            port: 10200
+
+      wyoming-piper-glados:
+        controller: wyoming-piper-glados
+        type: LoadBalancer
+        loadBalancerIP: ${SVC_WYOMING_PIPER_GLADOS_ADDR}
+        annotations:
+          internal.wynning.tech/hostname: "piper-glados.${SECRET_INTERNAL_DOMAIN}"
+        ports:
+          http:
+            port: 10200
+
+      wyoming-whisper:
+        controller: wyoming-whisper
+        type: LoadBalancer
+        loadBalancerIP: ${SVC_WYOMING_WHISPER_ADDR}
+        annotations:
+          internal.wynning.tech/hostname: "whisper.${SECRET_INTERNAL_DOMAIN}"
+        ports:
+          http:
+            port: 10300
+
+      wyoming-openwakeword:
+        controller: wyoming-openwakeword
+        type: LoadBalancer
+        loadBalancerIP: ${SVC_WYOMING_OPENWAKEWORD_ADDR}
+        annotations:
+          internal.wynning.tech/hostname: "openwakeword.${SECRET_INTERNAL_DOMAIN}"
+        ports:
+          http:
+            port: 10400
+
+    route:
+      app:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "Home-Assistant"
+          gethomepage.dev/description: "Home Automation"
+          gethomepage.dev/group: "Home Automation"
+          gethomepage.dev/icon: "home-assistant.png"
+          gethomepage.dev/weight: "11"
+          gethomepage.dev/pod-selector: "app.kubernetes.io/name = home-assistant"
+          external-dns.alpha.kubernetes.io/hostname: "home.${SECRET_ROOT_DOMAIN}"
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+          - name: envoy-internal
+            namespace: networking
+        hostnames:
+          - "home.${SECRET_ROOT_DOMAIN}"
+        rules:
+          - backendRefs:
+              - identifier: main
+                port: 8123
+
+      # internal:
+      #   parentRefs:
+      #     - name: envoy-internal
+      #       namespace: networking
+      #   hostnames:
+      #     - "home.${SECRET_INTERNAL_DOMAIN}"
+      #   rules:
+      #     - backendRefs:
+      #         - identifier: main
+      #           port: 8123
+
+      code:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "Home Assistant Configs"
+          gethomepage.dev/description: "Edit Home Assistant Configs"
+          gethomepage.dev/group: "Home Automation"
+          gethomepage.dev/icon: "code.png"
+          gethomepage.dev/pod-selector: "app.kubernetes.io/name = home-assistant"
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+        hostnames:
+          - "home-code.${SECRET_INTERNAL_DOMAIN}"
+        rules:
+          - backendRefs:
+              - identifier: code
+                port: 8081

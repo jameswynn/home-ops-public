@@ -1,0 +1,36 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kguardian
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 1.17.3
+  url: oci://ghcr.io/kguardian-dev/charts/kguardian
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kguardian
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: kguardian
+  interval: 30m
+  values:
+    controller:
+      debug: true
+      excludedNamespaces:
+        - kguardian
+      containerdSockPath: /run/k3s/containerd/containerd.sock
+      containerdBundlePath: /run/k3s/containerd/io.containerd.runtime.v2.task
+      # tolerations:
+      #   - effect: NoSchedule
+      #     key: arm
+      #     operator: Exists

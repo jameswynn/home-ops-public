@@ -1,0 +1,123 @@
+---
+# yaml-language-server: $schema=https://kubernetes-schemas.pages.dev/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: crd-schema-publisher
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 2026.815.170632
+  url: oci://ghcr.io/sholdee/charts/crd-schema-publisher
+  verify:
+    provider: cosign
+    matchOIDCIdentity:
+      - issuer: "^https://token.actions.githubusercontent.com$"
+        subject: "^https://github.com/sholdee/crd-schema-publisher.*$"
+---
+# yaml-language-server: $schema=https://kubernetes-schemas.pages.dev/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: crd-schema-publisher
+spec:
+  interval: 30m
+  timeout: 15m
+  chartRef:
+    kind: OCIRepository
+    name: crd-schema-publisher
+  values:
+    mode: controller
+    externalSecret:
+      enabled: false
+    metrics:
+      podMonitor:
+        enabled: true
+      prometheusRule:
+        enabled: true
+
+    extraVolumes:
+      - name: rclone-tmp
+        emptyDir: {}
+
+    extraContainers:
+      - name: rclone
+        image: ghcr.io/rclone/rclone:1.75.0
+        command: [ "/bin/sh", "-c" ]
+        args:
+          - |
+            # Wait for the publisher to complete its first successful build.
+            # If this path never appears, the sidecar stays fail-closed and
+            # does not delete remote content.
+            while [ ! -f /data/current/index.html ]; do sleep 5; done
+
+            rclone lsd s3:
+
+            while true; do
+              if [ ! -f /data/current/index.html ]; then
+                sleep 5
+                continue
+              fi
+              rclone sync /data/current s3:k8s-schemas.wynning.tech/ --exclude "/_meta/**" --checksum --verbose --transfers 4
+              sleep 60
+            done
+        env:
+          - name: RCLONE_CONFIG_S3_TYPE
+            value: "s3"
+          - name: RCLONE_CONFIG_S3_PROVIDER
+            value: "Other"
+          - name: RCLONE_CONFIG_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: k8s-schemas
+                key: endpoint
+          - name: RCLONE_CONFIG_S3_REGION
+            value: "garage"
+          - name: RCLONE_CONFIG_S3_ENV_AUTH
+            value: "false"
+          - name: RCLONE_CONFIG_S3_FORCE_PATH_STYLE
+            value: "true"
+          - name: RCLONE_CONFIG_S3_SIGN_ACCEPT_ENCODING
+            value: "false"
+          - name: RCLONE_CONFIG_S3_ACL
+            value: "private"
+          - name: RCLONE_CONFIG_S3_BUCKET_ACL
+            value: "private"
+          # Suppress default config file lookup — all config is via RCLONE_CONFIG_* env vars
+          - name: RCLONE_CONFIG
+            value: ""
+          - name: RCLONE_CONFIG_S3_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: k8s-schemas
+                key: access-key-id
+          - name: RCLONE_CONFIG_S3_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: k8s-schemas
+                key: secret-access-key
+          - name: RCLONE_S3_BUCKET
+            value: k8s-schemas.wynning.tech
+        volumeMounts:
+          - name: output
+            mountPath: /data
+            readOnly: true
+          - name: rclone-tmp
+            mountPath: /tmp
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 64Mi
+            ephemeral-storage: 1Gi
+        securityContext:
+          runAsUser: 65534
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ "ALL" ]

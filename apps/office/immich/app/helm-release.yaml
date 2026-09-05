@@ -1,0 +1,187 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: immich
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 0.13.1
+  url: oci://ghcr.io/immich-app/immich-charts/immich
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app immich
+  namespace: office
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: immich
+  install:
+    timeout: 10m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 10m
+    remediation:
+      retries: 3
+  values:
+    global:
+      security:
+        allowInsecureImages: true
+    controllers:
+      main:
+        containers:
+          main:
+            image:
+              # renovate: datasource=github-releases depName=immich-app/immich
+              tag: "v3.1.0"
+
+    server:
+      controllers:
+        main:
+          pod:
+            securityContext:
+              fsGroup: 1000
+              runAsUser: 1000
+          containers:
+            main:
+              env:
+                - name: DB_HOSTNAME
+                  value: immich-postgres-rw
+                - name: OAUTH_ENABLED
+                  value: "true"
+                - name: OAUTH_ISSUER_URL
+                  value: https://auth.${SECRET_ROOT_DOMAIN}/application/o/immich/.well-known/openid-configuration
+                - name: OAUTH_AUTO_REGISTER
+                  value: "true"
+                - name: OAUTH_BUTTON_TEXT
+                  value: Login with Wynning SSO
+                # - name: REDIS_HOSTNAME
+                #   value: immich-redis-headless
+                - name: REDIS_HOSTNAME
+                  value: immich-dragonfly
+                - name: REDIS_PORT
+                  value: "6379"
+                - name: REDIS_DBINDEX
+                  value: "2"
+              envFrom:
+                - secretRef:
+                    name: *app
+              # CPU from 7d of Prometheus data: p50 3.9m, p95 5.6m — but p99
+              # 377m and max 860m. This container is idle almost all the time
+              # and then does thumbnail/transcode work in short bursts, so the
+              # p95 badly understates it; 100m is sized for the burst floor
+              # rather than 3x the p95. No CPU limit, per the cluster
+              # convention — the old 3000m cap is what made those jobs crawl.
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 20Mi
+                  ephemeral-storage: 1Gi
+                limits:
+                  memory: 4000Mi
+                  ephemeral-storage: 1Gi
+
+      route:
+        main:
+          annotations:
+            gethomepage.dev/enabled: "true"
+            gethomepage.dev/name: "Immich"
+            gethomepage.dev/description: "Photo Management"
+            gethomepage.dev/group: "Applications"
+            gethomepage.dev/icon: "immich.png"
+            gethomepage.dev/weight: "20"
+            gethomepage.dev/pod-selector: "app.kubernetes.io/instance=immich"
+            external-dns.alpha.kubernetes.io/hostname: "immich.${SECRET_ROOT_DOMAIN}"
+          parentRefs:
+            - name: envoy-towonel
+              namespace: networking
+            - name: envoy-internal
+              namespace: networking
+          hostnames:
+            - "immich.${SECRET_ROOT_DOMAIN}"
+          rules:
+            - backendRefs:
+                - name: immich-anubis
+                  port: 8080
+
+    machine-learning:
+      controllers:
+        main:
+          strategy: Recreate
+          pod:
+            securityContext:
+              fsGroup: 1000
+              runAsUser: 1000
+          containers:
+            main:
+              # Must stay a map: a list replaces the chart's default env table
+              # outright, which silently dropped TRANSFORMERS_CACHE and
+              # HF_XET_CACHE and sent model downloads to the container filesystem.
+              env:
+                MPLCONFIGDIR: /cache/config
+                # Preload belongs on this container, not the server, and v3
+                # splits it per-encoder. Keep this matched to the CLIP model in
+                # Admin > Machine Learning > Smart Search — preloading anything
+                # else just pins a model no query will use.
+                MACHINE_LEARNING_PRELOAD__CLIP__TEXTUAL: ViT-B-32__openai
+                MACHINE_LEARNING_PRELOAD__CLIP__VISUAL: ViT-B-32__openai
+              # CPU from 7d of Prometheus data: p50 1.7m, p95 1.9m, max 52m.
+              # With the CLIP model preloaded and resident, inference only
+              # costs anything when a Smart Search query or a new upload comes
+              # in — 25m is the practical request floor. No CPU limit, per the
+              # cluster convention; the memory headroom below is the real
+              # constraint on this container, not CPU.
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 500Mi
+                  ephemeral-storage: 1Gi
+                limits:
+                  # ViT-H-14-378 OOMKilled at 4Gi loading both encoders; leave
+                  # headroom to switch Smart Search to it without another OOM.
+                  memory: 8Gi
+                  ephemeral-storage: 1Gi
+      persistence:
+        cache:
+          type: persistentVolumeClaim
+          existingClaim: immich-machine-learning-cache
+        dotcache:
+          enabled: true
+          type: persistentVolumeClaim
+          existingClaim: immich-machine-learning-other-cache
+          # bjw-s common ignores `mountPath` — it only reads globalMounts /
+          # advancedMounts. These landed on /dotcache and /config until now.
+          globalMounts:
+            - path: /.cache
+        config:
+          enabled: true
+          type: persistentVolumeClaim
+          existingClaim: immich-machine-learning-config
+          globalMounts:
+            - path: /.config
+
+    immich:
+      persistence:
+        library:
+          existingClaim: immich-nfs
+        # cache:
+        #   enabled: true
+        #   type: emptyDir
+        #   medium: Memory
+        #   sizeLimit: 1Gi
+        #   mountPath: /cache
+
+        # postgresql:
+        #   enabled: false
+
+        # redis:
+        #   enabled: false

@@ -1,0 +1,84 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: keda
+spec:
+  interval: 5m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 2.20.2
+  url: oci://ocharted.wynning.tech/kedacore.github.io/charts/keda
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: keda
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: keda
+  install:
+    timeout: 10m
+    replace: true
+    crds: CreateReplace
+    createNamespace: true
+  upgrade:
+    remediation:
+      remediateLastFailure: true
+      retries: 3
+      strategy: rollback
+    cleanupOnFail: true
+    crds: CreateReplace
+  test:
+    enable: true
+  rollback:
+    recreate: true
+    force: true
+    cleanupOnFail: true
+  uninstall:
+    keepHistory: false
+  driftDetection:
+    mode: enabled
+  maxHistory: 3
+  values:
+    crds:
+      install: true
+    operator:
+      replicaCount: 1
+    metricsServer:
+      replicaCount: 1
+    prometheus:
+      metricServer:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+      operator:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+      webhooks:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+    resources:
+      # CPU from 7d of Prometheus data: p50 11.1m, p95 12.3m, max 13.1m. The
+      # metrics apiserver just answers HPA queries for a handful of
+      # ScaledObjects — the 100m request was ~8x its p95. No CPU limit, per the
+      # cluster convention. The chart ships limits.cpu: 1 by default and Helm
+      # deep-merges it back in if the key is simply dropped, so it has to be
+      # explicitly nulled out.
+      metricServer:
+        requests:
+          cpu: 25m
+          memory: 100Mi
+          ephemeral-storage: 200Mi
+        limits:
+          cpu: null
+          memory: 1000Mi
+          ephemeral-storage: 200Mi

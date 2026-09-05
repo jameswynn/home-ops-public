@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-templates
+data:
+  email-verification.html: |
+    <html>
+    <body>
+    <h1>Welcome!</h1>
+    <p>Your token expires at {{ expires }}</p>
+    <a href="{{ url }}">Click here to confirm</a>
+    </body>
+    </html>

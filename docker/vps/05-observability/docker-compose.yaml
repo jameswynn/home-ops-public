@@ -1,0 +1,146 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# VPS observability — ships this host's metrics and container logs to the cluster's
+# Prometheus and Loki over the tailnet, so the edge stops being a monitoring blind spot.
+# Ported from eleboucher/homelab docker/vps/04-observability, retargeted from
+# VictoriaMetrics/VictoriaLogs to our Prometheus + Loki (forgejo #962).
+#
+# Nothing here is public and nothing needs a secret: both ingest endpoints are
+# tailscale-operator proxies reachable only from the tailnet, pinned by address below
+# for the same reason 03-crowdsec pins Loki (MagicDNS does not resolve from a docker
+# bridge — see ../README.md).
+#
+# The stack is numbered 05 rather than the 04 the issue named: 04-runner already took
+# that slot, and doco-cd derives the Compose project name from the directory.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  # Host metrics (CPU, memory, disk, network, systemd). Runs on the edge bridge rather
+  # than host networking on purpose: publishing 9100 on a public box would expose it to
+  # the internet, and the exporter reports host-level figures regardless because every
+  # collector reads through the --path.* mounts below, not its own namespace.
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.12.1
+    container_name: node-exporter
+    restart: unless-stopped
+    pid: host
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/host/root"
+      # Container/overlay mounts are noise — they duplicate the host filesystem and churn
+      # a new series every time an image layer is pulled.
+      - "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/credentials/.+|var/lib/docker/.+)($|/)"
+      - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    expose:
+      - "9100"
+    healthcheck:
+      test:
+        - "CMD"
+        - "wget"
+        - "--quiet"
+        - "--tries=1"
+        - "--spider"
+        - "http://127.0.0.1:9100/metrics"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+    logging: *default-logging
+
+  # Scrape + forward, no local TSDB. --agent keeps only a WAL, which is drained into the
+  # cluster Prometheus by remote_write and replayed after a restart, so a cluster outage
+  # costs nothing as long as it is shorter than the WAL retention (2h by default).
+  prometheus-agent:
+    image: quay.io/prometheus/prometheus:v3.14.0
+    container_name: prometheus-agent
+    restart: unless-stopped
+    command:
+      - "--agent"
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.agent.path=/prometheus"
+      - "--web.enable-lifecycle"
+      - "--log.level=info"
+    # The cluster's Prometheus, reached over the tailnet. Same pinning rationale as
+    # 03-crowdsec's `loki` entry: MagicDNS does not resolve from a docker bridge, so the
+    # tailscale-operator proxy is addressed directly. 100.82.29.118 is device
+    # `prometheus` (core/monitoring/kube-prometheus-stack). Re-check with `tailscale
+    # status` if that proxy is ever deleted and recreated.
+    extra_hosts:
+      - "prometheus:100.82.29.118"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-agent-data:/prometheus
+    expose:
+      - "9090"
+    healthcheck:
+      test:
+        - "CMD"
+        - "wget"
+        - "--quiet"
+        - "--tries=1"
+        - "--spider"
+        - "http://127.0.0.1:9090/-/healthy"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    logging: *default-logging
+
+  # Container logs → Loki. Tails docker's json-file logs straight off disk rather than
+  # switching every stack to the fluentd log driver, which would break `docker logs` and
+  # make container startup depend on this one being up.
+  fluent-bit:
+    image: docker.io/fluent/fluent-bit:5.1.1
+    container_name: fluent-bit
+    restart: unless-stopped
+    command:
+      - "--config=/fluent-bit/etc/fluent-bit.yaml"
+    # See prometheus-agent above. 100.67.197.96 is device `loki`, the proxy in front of
+    # loki-gateway; 03-crowdsec pins the same address for its Envoy acquisition.
+    extra_hosts:
+      - "loki:100.67.197.96"
+    volumes:
+      - ./config/fluent-bit/fluent-bit.yaml:/fluent-bit/etc/fluent-bit.yaml:ro
+      - ./config/fluent-bit/enrich.lua:/fluent-bit/etc/enrich.lua:ro
+      # Read-only: the log files themselves plus each container's config.v2.json, which
+      # is the only place the container *name* exists on disk (see enrich.lua). Mounting
+      # the docker socket would be the usual way to get names and is deliberately avoided.
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - fluent-bit-state:/var/lib/fluent-bit
+    expose:
+      # Built-in HTTP server: /api/v1/metrics/prometheus, scraped by prometheus-agent.
+      # This doubles as the liveness signal — the image is distroless with no shell or
+      # curl, so a compose healthcheck is not possible; `up{job="vps-fluent-bit"}` and
+      # the plugin's own retry/error counters are what tell you shipping has stopped.
+      - "2020"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+    logging: *default-logging
+networks:
+  default:
+    name: edge
+    external: true
+volumes:
+  prometheus-agent-data:
+  fluent-bit-state:

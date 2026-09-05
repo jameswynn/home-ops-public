@@ -1,0 +1,42 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/probe_v1.json
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: lan-icmp
+spec:
+  module: icmp
+  prober:
+    url: blackbox-exporter.monitoring.svc.cluster.local:9115
+  targets:
+    staticConfig:
+      static:
+        - helheim.${SECRET_CORE_DOMAIN}
+        - svartalfheim.${SECRET_CORE_DOMAIN}
+        - muspelheim.${SECRET_CORE_DOMAIN}
+        - nidavellir.${SECRET_CORE_DOMAIN}
+        - niflheim.${SECRET_CORE_DOMAIN}
+        - nas.${SECRET_CORE_DOMAIN}
+        - midgard.dyn.${SECRET_ROOT_DOMAIN}
+  metricRelabelings:
+    - targetLabel: service
+      replacement: blackbox-exporter
+      action: replace
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/probe_v1.json
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: lan-tcp
+spec:
+  module: tcp_connect
+  prober:
+    url: blackbox-exporter.monitoring.svc.cluster.local:9115
+  targets:
+    staticConfig:
+      static:
+        - nas.${SECRET_CORE_DOMAIN}:2049
+  metricRelabelings:
+    - targetLabel: service
+      replacement: blackbox-exporter
+      action: replace

@@ -1,0 +1,195 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: falcosecurity
+spec:
+  interval: 1h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 9.1.0
+  url: oci://ocharted.wynning.tech/falcosecurity.github.io/charts/falco
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: falco
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: falcosecurity
+  maxHistory: 3
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  # valuesFrom:
+  #   - kind: ConfigMap
+  #     name: falco-rules
+  #     valuesKey: rules.yaml
+  values:
+    tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/master
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/control-plane
+      - effect: NoSchedule
+        key: arm
+        value: "true"
+
+    # Use eBPF driver
+    # driver:
+    #   enabled: true
+    #   kind: modern_ebpf
+
+    collectors:
+      enabled: true
+      containerEngine:
+        enabled: true
+      kubernetes:
+        # -- enabled specifies whether the Kubernetes metadata should be collected using the k8smeta plugin and the k8s-metacollector component.
+        # It will deploy the k8s-metacollector external component that fetches Kubernetes metadata and pushes them to Falco instances.
+        # For more info see:
+        # https://github.com/falcosecurity/k8s-metacollector
+        # https://github.com/falcosecurity/charts/tree/master/charts/k8s-metacollector
+        # When this option is disabled, Falco falls back to the container annotations to grab the metadata.
+        # In such a case, only the ID, name, namespace, labels of the pod will be available.
+        enabled: true
+
+    # Enable gRPC for Falcosidekick
+    #    falco:
+    #      grpc:
+    #        enabled: true
+    #        bind_address: "0.0.0.0:5060"
+
+    # Falcosidekick configuration
+    falcosidekick:
+      enabled: true
+      replicaCount: 1
+      # Enable Web UI
+      webui:
+        enabled: true
+        replicaCount: 1
+        ttl: 7d
+        externalRedis:
+          # enabled: true
+          url: falco-dragonfly
+        redis:
+          # enabled: false
+          customConfig:
+            - maxmemory 768mb
+            - maxmemory-policy allkeys-lfu
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+              ephemeral-storage: 500Mi
+      grafana:
+        dashboards:
+          enabled: true
+      prometheusRules:
+        enabled: true
+
+      # Configuration for outputs
+      config:
+        alertmanager:
+          hostport: "http://alertmanager-operated.monitoring.svc.cluster.local:9093"
+          endpoint: "/api/v2/alerts"
+          minimumpriority: "warning"
+
+    # -- Enable the response actions using Falco Talon.
+    responseActions:
+      enabled: false
+
+    # -- For configuration values, see https://github.com/falcosecurity/charts/blob/master/charts/falco-talon/values.yaml
+    # -- It must be used in conjunction with the response_actions.enabled option.
+    falco-talon: {}
+    serviceMonitor:
+      create: true
+    metrics:
+      enabled: true
+    grafana:
+      dashboards:
+        enabled: true
+        configMaps:
+          falco:
+            name: falco-grafana-dashboard
+            # namespace: "monitoring"
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1024Mi
+        ephemeral-storage: 200Mi
+
+    customRules:
+      custom-rules.yaml: |-
+        - macro: user_known_contact_k8s_api_server_activities
+          condition: >
+            or container.image.repository in (
+              quay.io/kiwigrid/k8s-sidecar,
+              ghcr.io/kiwigrid/k8s-sidecar,
+              mirror.gcr.io/longhornio/longhorn-manager,
+              mirror.gcr.io/longhornio/longhorn-share-manager,
+              mirror.gcr.io/longhornio/longhorn-instance-manager,
+              mirror.gcr.io/longhornio/csi-resizer,
+              quay.io/jetstack/cert-manager-webhook,
+              quay.io/metallb/controller,
+              docker.io/falcosecurity/k8s-metacollector,
+              ghcr.io/goauthentik/server
+            )
+          override:
+            condition: append
+
+        - macro: known_drop_and_execute_activities
+          condition: >
+            or (container.image.repository == "ghcr.io/flaresolverr/flaresolverr" and proc.name == "chromedriver")
+            or (container.image.repository == "docker.io/library/alpine" and proc.name == "stunnel" and k8s.ns.name == "monitoring" and proc.exepath == "/usr/bin/stunnel")
+            or (container.image.repository == "docker.io/library/alpine" and proc.name == "c_rehash" and k8s.ns.name == "monitoring" and proc.exepath == "/usr/bin/c_rehash")
+            or (container.image.repository == "docker.io/library/alpine" and proc.name == "update-ca-certificates" and k8s.ns.name == "monitoring" and proc.exepath == "/usr/sbin/update-ca-certificates")
+          override:
+            condition: append
+
+        - macro: user_known_stand_streams_redirect_activities
+          condition: or (container.image.repository == "docker.io/longhornio/longhorn-manager" and proc.name == "longhorn")
+          override:
+            condition: append
+
+        - macro: allowed_clear_log_files
+          condition: or (container.image.repository == "docker.io/longhornio/longhorn-instance-manager" and proc.name == "tee" and fd.name == "/var/log/tgtd.log")
+          override:
+            condition: append
+
+        - macro: user_read_sensitive_file_conditions
+          condition: >
+            or (container.image.repository == "docker.io/library/alpine" and proc.name == "adduser" and k8s.ns.name == "monitoring")
+          override:
+            condition: append
+
+        - list: user_known_packet_socket_binaries
+          items:
+            - kube-vip
+          override:
+            items: append
+
+        - list: protected_shell_spawning_binaries
+          items:
+            - postgres
+          override:
+            items: append

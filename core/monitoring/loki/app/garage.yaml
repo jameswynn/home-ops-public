@@ -1,0 +1,67 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: &bucket loki-chunks
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  quotas:
+    maxSize: 10Gi
+  globalAlias: *bucket
+# ---
+# # yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+# apiVersion: garage.rajsingh.info/v1beta1
+# kind: GarageBucket
+# metadata:
+#   name: &bucket loki-ruler
+# spec:
+#   clusterRef:
+#     name: garage-nas
+#     namespace: default
+#   quotas:
+#     maxSize: 1Gi
+#   globalAlias: *bucket
+# ---
+# # yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+# apiVersion: garage.rajsingh.info/v1beta1
+# kind: GarageBucket
+# metadata:
+#   name: &bucket loki-admin
+# spec:
+#   clusterRef:
+#     name: garage-nas
+#     namespace: default
+#   quotas:
+#     maxSize: 1Gi
+#   globalAlias: *bucket
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: loki
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  importKey:
+    secretRef:
+      name: loki-garage
+    accessKeyIdKey: GARAGE_ACCESS_KEY
+    secretAccessKeyKey: GARAGE_SECRET_KEY
+  bucketPermissions:
+    - bucketRef:
+        name: loki-chunks
+      read: true
+      write: true
+  # - bucketRef:
+  #     name: loki-admin
+  #   read: true
+  #   write: true
+  # - bucketRef:
+  #     name: loki-ruler
+  #   read: true
+  #   write: true

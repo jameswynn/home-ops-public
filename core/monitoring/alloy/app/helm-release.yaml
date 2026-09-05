@@ -1,0 +1,221 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: alloy
+spec:
+  interval: 5m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 1.11.0
+  url: oci://ocharted.wynning.tech/grafana.github.io/helm-charts/alloy
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: alloy
+  namespace: monitoring
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: alloy
+  values:
+    # We tail pod logs via discovery.kubernetes + file matching, not the
+    # loki.source.podlogs component, so the bundled PodLogs CRD is unneeded.
+    # Skipping it also avoids clobbering a pre-existing podlogs CRD whose
+    # storedVersions still include v1alpha1 (would require a storage migration).
+    crds:
+      create: false
+    alloy:
+      # Run as root so the DaemonSet can read /var/log/pods and the systemd journal.
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      # Mounts host /var/log (covers /var/log/pods and /var/log/journal).
+      mounts:
+        varlog: true
+      clustering:
+        enabled: false
+      resources:
+        requests:
+          # DaemonSet, so one number has to fit the busiest node. CPU from 7d
+          # of Prometheus data, per node: niflheim (busiest log producer) p50
+          # 95.3m / p95 106.0m / max 226.2m, the other four p50 45-58m / p95
+          # 50-68m. The 75m request was under niflheim's p95 — it has been
+          # running on borrowed CPU on the one node where log volume actually
+          # matters. 250m covers that p95 ~2.4x and clears the observed max.
+          # The 500m limit was throttling hard on top of that: 6.7% of CFS
+          # periods at p50 on niflheim, 4.1% on the next node, spiking to 65%.
+          # No CPU limit, per the cluster convention.
+          cpu: 250m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+      # Expose the syslog TCP listener on the pod/container. The fixed-IP
+      # LoadBalancer that fronts it lives in syslog-service.yaml.
+      extraPorts:
+        - name: tcp-syslog
+          port: 1514
+          targetPort: 1514
+          protocol: TCP
+      configMap:
+        content: |-
+          // ---------------------------------------------------------------------
+          // Loki write endpoint (same target promtail used)
+          // ---------------------------------------------------------------------
+          loki.write "default" {
+            endpoint {
+              url = "http://loki-gateway:80/loki/api/v1/push"
+            }
+          }
+
+          // ---------------------------------------------------------------------
+          // Kubernetes pod logs (replaces promtail chart's implicit default job)
+          // Reproduces promtail's default relabeling so the `app`, `namespace`,
+          // `pod`, `container`, `node_name`, `instance`, `component` and `job`
+          // labels match exactly — the loki alert rules depend on `app`.
+          // ---------------------------------------------------------------------
+          discovery.kubernetes "pods" {
+            role = "pod"
+          }
+
+          discovery.relabel "pod_logs" {
+            targets = discovery.kubernetes.pods.targets
+
+            rule {
+              source_labels = ["__meta_kubernetes_pod_controller_name"]
+              regex         = "([0-9a-z-.]+?)(-[0-9a-f]{8,10})?"
+              target_label  = "__tmp_controller_name"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name", "__meta_kubernetes_pod_label_app", "__tmp_controller_name", "__meta_kubernetes_pod_name"]
+              regex         = "^;*([^;]+)(;.*)?$"
+              target_label  = "app"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_instance", "__meta_kubernetes_pod_label_instance"]
+              regex         = "^;*([^;]+)(;.*)?$"
+              target_label  = "instance"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_component", "__meta_kubernetes_pod_label_component"]
+              regex         = "^;*([^;]+)(;.*)?$"
+              target_label  = "component"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_node_name"]
+              target_label  = "node_name"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_namespace"]
+              target_label  = "namespace"
+            }
+            rule {
+              source_labels = ["namespace", "app"]
+              separator     = "/"
+              target_label  = "job"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_name"]
+              target_label  = "pod"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              target_label  = "container"
+            }
+            // Standard pods: /var/log/pods/<uid>/<container>/*.log
+            rule {
+              source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+              separator     = "/"
+              replacement   = "/var/log/pods/*$1/*.log"
+              target_label  = "__path__"
+            }
+            // Static (control-plane) pods keyed by config hash annotation.
+            rule {
+              source_labels = ["__meta_kubernetes_pod_annotationpresent_kubernetes_io_config_hash", "__meta_kubernetes_pod_annotation_kubernetes_io_config_hash", "__meta_kubernetes_pod_container_name"]
+              separator     = "/"
+              regex         = "true/(.*)"
+              replacement   = "/var/log/pods/*$1/*.log"
+              target_label  = "__path__"
+            }
+          }
+
+          local.file_match "pod_logs" {
+            path_targets = discovery.relabel.pod_logs.output
+          }
+
+          loki.source.file "pod_logs" {
+            targets    = local.file_match.pod_logs.targets
+            forward_to = [loki.process.pod_logs.receiver]
+          }
+
+          loki.process "pod_logs" {
+            stage.cri {}
+            forward_to = [loki.write.default.receiver]
+          }
+
+          // ---------------------------------------------------------------------
+          // systemd journal (hostPath /var/log/journal, max_age 12h)
+          // ---------------------------------------------------------------------
+          loki.relabel "journal" {
+            forward_to = []
+            rule {
+              source_labels = ["__journal__systemd_unit"]
+              target_label  = "unit"
+            }
+            rule {
+              source_labels = ["__journal__hostname"]
+              target_label  = "hostname"
+            }
+          }
+
+          loki.source.journal "journal" {
+            path          = "/var/log/journal"
+            max_age       = "12h"
+            labels        = { job = "systemd-journal" }
+            relabel_rules = loki.relabel.journal.rules
+            forward_to    = [loki.write.default.receiver]
+          }
+
+          // ---------------------------------------------------------------------
+          // syslog TCP receiver (external devices push to ${SVC_SYSLOG_ADDR}:1514)
+          // ---------------------------------------------------------------------
+          loki.relabel "syslog" {
+            forward_to = []
+            rule {
+              source_labels = ["__syslog_message_hostname"]
+              target_label  = "host"
+            }
+            rule {
+              source_labels = ["__syslog_message_app_name"]
+              target_label  = "app"
+            }
+          }
+
+          loki.source.syslog "syslog" {
+            listener {
+              address               = "0.0.0.0:1514"
+              protocol              = "tcp"
+              label_structured_data = true
+              labels                = { job = "syslog" }
+            }
+            relabel_rules = loki.relabel.syslog.rules
+            forward_to    = [loki.write.default.receiver]
+          }
+    controller:
+      type: daemonset
+      tolerations:
+        - key: "node-role.kubernetes.io/master"
+          operator: "Exists"
+        - key: "arm"
+          value: "true"
+          operator: "Equal"
+          effect: "NoSchedule"
+    service:
+      enabled: true
+    serviceMonitor:
+      enabled: true

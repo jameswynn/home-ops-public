@@ -1,0 +1,147 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app actual-sync
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  values:
+    controllers:
+      actual-sync:
+        # A deployment, not a cronjob, despite this being a scheduled task.
+        #
+        # The image has no one-shot mode: src/index.ts is `createCronJob().start()`
+        # and the process never exits, so a CronJob pod would run forever and
+        # concurrencyPolicy would suppress every subsequent run. Scheduling lives
+        # inside the container via CRON_SCHEDULE below. Same shape as
+        # apps/default/adguard/sync and apps/ghostfolio/ghostrecon.
+        type: deployment
+        # One replica, Recreate rather than RollingUpdate. The single in-process
+        # scheduler is the only thing preventing overlapping syncs — that is a
+        # property of the process, not a lock, so a second pod defeats it, and
+        # RollingUpdate would briefly run two.
+        replicas: 1
+        strategy: Recreate
+        annotations:
+          # Password is read once at startup; a rotated secret only takes effect
+          # on a pod roll.
+          reloader.stakater.com/auto: "true"
+
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+
+        containers:
+          app:
+            image:
+              # Tag couples to the server, it is not independent: 26.8.1.1 embeds
+              # @actual-app/api 26.8.1, matching actual-server:26.8.1 in
+              # ../../app/helm-release.yaml. Bump the two together — a client too
+              # far from the server fails the API handshake at init().
+              repository: docker.io/seriouslag/actual-auto-sync
+              tag: 26.8.1.1
+            env:
+              TZ: ${CLUSTER_TZ}
+              # In-namespace, which is what apps/actual/netpols.yaml already
+              # permits without a new rule.
+              ACTUAL_SERVER_URL: http://actual.actual.svc.cluster.local:5006
+              # Budget *files*, not accounts — this is the sync ID (Actual's
+              # internal groupId, Settings -> Advanced -> Sync ID), and it matches
+              # group-<uuid>.sqlite in the server's /data/user-files. There is
+              # exactly one budget, so exactly one entry. Every account inside it
+              # is synced automatically; nothing here enumerates accounts.
+              #
+              # Not a credential and useless without the password above, so it
+              # stays in git where it documents which budget this targets.
+              ACTUAL_BUDGET_SYNC_IDS: 4614fccc-5e18-4e2c-8dfc-02557cbba72c
+              # 00:00 / 08:00 / 16:00 local.
+              #
+              # Three runs a day is deliberate rather than arbitrary: GoCardless
+              # banks rate-limit to 4 API calls per account per day, so this
+              # leaves one spare for a manual sync in the UI. SimpleFIN has no
+              # such cap. If rate-limit errors ever appear, the first thing to
+              # spend is RUN_ON_START, not this schedule.
+              CRON_SCHEDULE: "0 */8 * * *"
+              # Cron is evaluated in this zone, unlike the repo's CronJob
+              # schedules which inherit controller-manager local time.
+              TIMEZONE: ${CLUSTER_TZ}
+              # Sync per-account and skip the ones that fail, instead of one bare
+              # runBankSync() for the whole budget. Costs an extra API call per
+              # account, buys not losing every other institution to one bank
+              # being down overnight. Failures land as a warn, not a crash.
+              SKIP_FAILED_ACCOUNTS: "true"
+              # Sync once on startup so a deploy is verifiable immediately rather
+              # than up to 8h later. Restarts are rare (image bumps, secret
+              # rotation), but on a day with one this is the 4th GoCardless call
+              # — see CRON_SCHEDULE.
+              RUN_ON_START: "true"
+              # Points the Actual API's budget cache at the emptyDir below; the
+              # default ./data is not writable under readOnlyRootFilesystem.
+              ACTUAL_DATA_DIR: /data
+              LOG_LEVEL: info
+            envFrom:
+              # ACTUAL_SERVER_PASSWORD
+              - secretRef:
+                  name: *app
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            # The image serves no HTTP port at all, so there is nothing to probe.
+            # Explicit `enabled: false` rather than omission — app-template
+            # silently drops any probe block lacking `enabled: true`, which makes
+            # an omitted probe and a disabled one look identical in the diff but
+            # not in intent.
+            probes:
+              liveness:
+                enabled: false
+              readiness:
+                enabled: false
+              startup:
+                enabled: false
+            # New workload, so no Prometheus history to size from yet. 25m is the
+            # practical request floor per the cluster convention; revisit after
+            # 7d. Work is bursty — idle between runs, then a budget download and
+            # a handful of HTTPS calls. No CPU limit, per the cluster convention.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 128Mi
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 512Mi
+                # emptyDir usage counts against this, and the budget sqlite is
+                # ~11Mi today. 1Gi leaves room for it to grow without the kubelet
+                # evicting the pod mid-sync.
+                ephemeral-storage: 1Gi
+
+    persistence:
+      # Cache, not state: the API re-downloads the budget from the server on
+      # every run and the retry path deletes this directory outright, so there is
+      # nothing here worth persisting or backing up.
+      data:
+        type: emptyDir
+        sizeLimit: 512Mi
+        advancedMounts:
+          actual-sync:
+            app:
+              - path: /data
+      # readOnlyRootFilesystem makes /tmp unwritable; node and the sqlite wasm
+      # both expect it.
+      tmp:
+        type: emptyDir
+        sizeLimit: 64Mi
+        advancedMounts:
+          actual-sync:
+            app:
+              - path: /tmp

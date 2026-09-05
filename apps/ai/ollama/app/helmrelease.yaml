@@ -1,0 +1,116 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app ollama
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 2
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    # defaultPodOptions:
+    #   nodeSelector:
+    #     kubernetes.io/hostname: "powernode"
+    controllers:
+      main:
+        type: deployment
+        pod:
+          # Was pinned to nidavellir, but nothing here needs that node: ollama runs
+          # CPU inference (no GPU/TPU resource request) and both its volumes are
+          # longhorn with 3 replicas and dataLocality disabled, so they re-attach
+          # anywhere. nidavellir is the only coral-tpu node, i.e. the only node
+          # frigate can run on, so keep the portable workloads off it.
+          #
+          # muspelheim is excluded for the same "portable workload" reason: its
+          # etcd WAL shares one LVM VG with the Longhorn replica store on a
+          # DRAM-less Crucial BX500, and model loads stream GBs off disk. Both
+          # ollama volumes are longhorn, so this is safe as a hard rule — the
+          # replicas re-attach on whichever node the pod lands on.
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: feature.node.kubernetes.io/coral-tpu
+                        operator: DoesNotExist
+                      - key: kubernetes.io/arch
+                        operator: In
+                        values:
+                          - amd64
+                      - key: kubernetes.io/hostname
+                        operator: NotIn
+                        values:
+                          - muspelheim
+        annotations:
+          reloader.stakater.com/auto: "true"
+        containers:
+          main:
+            image:
+              repository: mirror.gcr.io/ollama/ollama
+              tag: 0.32.14
+            env:
+              - name: TZ
+                value: ${CLUSTER_TZ}
+              - name: OLLAMA_HOST
+                value: 0.0.0.0
+              - name: OLLAMA_ORIGINS
+                value: "*"
+              - name: OLLAMA_MODELS
+                value: &modelPath "/models"
+              - name: OLLAMA_KEEP_ALIVE
+                value: "24h"
+              - name: OLLAMA_LOAD_TIMEOUT
+                value: "600"
+            resources:
+              requests:
+                cpu: 200m
+                memory: 4Gi
+              limits:
+                memory: 12Gi
+    service:
+      main:
+        controller: main
+        type: LoadBalancer
+        externalTrafficPolicy: Local
+        loadBalancerIP: "${SVC_OLLAMA_ADDR}"
+        ports:
+          http:
+            port: &port 11434
+
+    route:
+      app:
+        annotations:
+          internal.wynning.tech/hostname: &host "ollama-api.${SECRET_INTERNAL_DOMAIN}"
+        hostnames:
+          - *host
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+
+    persistence:
+      config:
+        enabled: true
+        existingClaim: ollama
+        advancedMounts:
+          main:
+            main:
+              - path: /root/.ollama
+      models:
+        enabled: true
+        existingClaim: ollama-models-shared
+        advancedMounts:
+          main:
+            main:
+              - path: *modelPath

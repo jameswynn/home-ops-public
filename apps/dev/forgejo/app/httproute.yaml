@@ -1,0 +1,56 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.networking.k8s.io/httproute_v1.json
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  # Deliberately not "forgejo": that name is owned by the chart's own HTTPRoute
+  # until the httpRoute.enabled=false upgrade lands, and reusing it would be a
+  # server-side-apply ownership conflict.
+  name: forgejo-public
+  annotations:
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: "Forgejo"
+    gethomepage.dev/description: "Private Github Alternative"
+    gethomepage.dev/group: "Development"
+    gethomepage.dev/icon: "forgejo.svg"
+    gethomepage.dev/weight: "90"
+    # Homepage defaults the pod status selector to the route name
+    # (app.kubernetes.io/name=forgejo-public), which matches nothing and logs an
+    # error on every refresh. Point it at the real Forgejo pod — not the anubis
+    # proxy or the runner, which carry their own app.kubernetes.io/name values.
+    gethomepage.dev/pod-selector: "app.kubernetes.io/name=forgejo"
+    external-dns.alpha.kubernetes.io/hostname: "forge.${SECRET_ROOT_DOMAIN}"
+spec:
+  parentRefs:
+    - name: envoy-towonel
+      namespace: networking
+    - name: envoy-internal
+      namespace: networking
+  hostnames:
+    - "forge.${SECRET_ROOT_DOMAIN}"
+  rules:
+    # Public hostname goes through anubis. X-Real-Ip is already set for us by
+    # the ClientTrafficPolicy on both gateways, so no header filter is needed.
+    - backendRefs:
+        - name: forgejo-anubis
+          port: 8080
+      timeouts:
+        request: 300s
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.networking.k8s.io/httproute_v1.json
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: forgejo-internal
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: networking
+      sectionName: https
+  hostnames:
+    - "forge.${SECRET_INTERNAL_DOMAIN}"
+  # Deliberately bypasses anubis - unchallenged path in if anubis misbehaves.
+  rules:
+    - backendRefs:
+        - name: forgejo-http
+          port: 3000

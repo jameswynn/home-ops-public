@@ -1,0 +1,154 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagecluster_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageCluster
+metadata:
+  name: garage-cluster
+spec:
+  replicas: 3
+  zone: us-east-1
+  replication:
+    factor: 3
+  resources:
+    requests:
+      cpu: 15m
+  storage:
+    metadata:
+      size: 1Gi
+      storageClassName: local-path
+    data:
+      size: 20Gi
+      storageClassName: local-path
+  network:
+    rpcBindPort: 3901
+    service:
+      type: ClusterIP
+  admin:
+    # enabled: true
+    bindPort: 3903
+    adminTokenSecretRef:
+      name: garage
+      key: GARAGE_ADMIN_TOKEN
+  webApi:
+    rootDomain: ".web.${SECRET_INTERNAL_DOMAIN}"
+  imageRepository: mirror.gcr.io/dxflrs
+  # muspelheim's etcd WAL sits on a DRAM-less Crucial BX500 sharing one LVM VG
+  # with the Longhorn replica store. Garage's block store does sustained writes
+  # plus periodic resync/scrub, and it is the S3 backend for both Loki chunks
+  # and Tempo blocks — enough disk pressure to show up as etcd commit stalls on
+  # that node.
+  #
+  # Soft, not required: `storage.*.storageClassName` is local-path, so
+  # data/metadata-garage-cluster-0 are PVs pinned to muspelheim by their own
+  # node affinity. A required rule would make garage-cluster-0 permanently
+  # Pending — the replication factor of 3 means the DATA is safe to lose on one
+  # node, but the pod still cannot start while its PVC exists. Soft prevents new
+  # replicas from landing here; relocating pod 0 means deleting its two PVCs and
+  # letting garage re-sync from the other two, which is a deliberate manual step.
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                  - muspelheim
+
+# ---
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   annotations:
+#     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+#     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+#     gatus.home-operations.com/endpoint: |-
+#       conditions: ["[STATUS] == 403"]
+#   name: garage-cluster-web
+# spec:
+#   ingressClassName: nginx
+#   rules:
+#     - host: &host s3.${SECRET_INTERNAL_DOMAIN}
+#       http:
+#         paths:
+#           - backend:
+#               service:
+#                 name: garage-cluster
+#                 port:
+#                   number: 3900
+#             path: /
+#             pathType: Prefix
+#     - host: &host1 web.${SECRET_INTERNAL_DOMAIN}
+#       http:
+#         paths:
+#           - backend:
+#               service:
+#                 name: garage-cluster
+#                 port:
+#                   number: 3902
+#             path: /
+#             pathType: Prefix
+#     - host: &host2 "*.web.${SECRET_INTERNAL_DOMAIN}"
+#       http:
+#         paths:
+#           - backend:
+#               service:
+#                 name: garage-cluster
+#                 port:
+#                   number: 3902
+#             path: /
+#             pathType: Prefix
+#   tls:
+#     - hosts:
+#         - *host
+#         - *host1
+#         - *host2
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.networking.k8s.io/httproute_v1.json
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: garage-cluster-web
+  annotations:
+    # The sidecar builds the probe URL from the first hostname, which here is a
+    # wildcard — "https://*.web.<domain>" is not resolvable, so the check errored
+    # rather than failed. Pin the concrete host. Garage's web endpoint answers 404
+    # for a host with no matching bucket, which is the healthy response; the body
+    # assertion distinguishes that from Envoy's own no-route 404 (empty body), so
+    # the check still fails if the route is removed.
+    gatus.home-operations.com/endpoint: |-
+      url: https://web.${SECRET_INTERNAL_DOMAIN}
+      conditions:
+        - "[STATUS] == 404"
+        - "[BODY] == pat(*404 Not Found*)"
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: networking
+  hostnames:
+    - "*.web.${SECRET_INTERNAL_DOMAIN}"
+    - "web.${SECRET_INTERNAL_DOMAIN}"
+  rules:
+    - backendRefs:
+        - name: garage-cluster
+          port: 3902
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.networking.k8s.io/httproute_v1.json
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: garage-cluster-s3
+  annotations:
+    gatus.home-operations.com/endpoint: |-
+      conditions: ["[STATUS] == 403"]
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: networking
+  hostnames:
+    - "s3.${SECRET_INTERNAL_DOMAIN}"
+  rules:
+    - backendRefs:
+        - name: garage-cluster
+          port: 3900

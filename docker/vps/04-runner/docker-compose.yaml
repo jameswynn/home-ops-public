@@ -1,0 +1,123 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# Forgejo Actions runner — CI executor for forge.wynning.tech. Ported/adapted from
+# eleboucher/homelab docker/vps/07-runner. A privileged Docker-in-Docker sidecar is the
+# job container engine; the runner daemon connects to Forgejo with a persistent
+# UUID+token credential pair (shown once when you create the runner in Forgejo's runner
+# settings — NOT a short-lived registration token). Both are stored in Bitwarden Secrets
+# Manager and injected by doco-cd (see ../.doco-cd.yaml).
+#
+# This stack deliberately does NOT join the shared `edge` network: the dind daemon
+# exposes an unauthenticated, root-equivalent API (tcp 2375, --tls=false), so it must
+# stay on this project's private bridge, isolated from the public-facing edge proxy.
+# The two services reach each other by name over Compose's implicit default network.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  forgejo-runner-dind:
+    # renovate: datasource=docker depName=docker
+    image: docker.io/library/docker:29-dind
+    container_name: forgejo-runner-dind
+    restart: unless-stopped
+    privileged: true
+    command:
+      - dockerd
+      - -H
+      - tcp://0.0.0.0:2375
+      - --tls=false
+    volumes:
+      - dind-data:/var/lib/docker
+    logging: *default-logging
+
+  forgejo-runner:
+    # renovate: datasource=docker depName=data.forgejo.org/forgejo/runner
+    image: data.forgejo.org/forgejo/runner:13.0.0
+    container_name: forgejo-runner
+    restart: unless-stopped
+    depends_on:
+      forgejo-runner-dind:
+        condition: service_started
+    environment:
+      DOCKER_HOST: tcp://forgejo-runner-dind:2375
+      FORGEJO_RUNNER_UUID: ${FORGEJO_RUNNER_UUID}
+      FORGEJO_RUNNER_TOKEN: ${FORGEJO_RUNNER_TOKEN}
+    # forge.wynning.tech is migrated to towonel and resolves to this VPS's own public IP.
+    # The VPS can't hairpin-NAT back to itself (OVH), so reaching that IP hangs. Pin the
+    # name to the Docker host instead: the runner then hits the host-published Caddy edge
+    # (:443) with SNI intact, which SNI-routes into the same tunnel external clients use.
+    extra_hosts:
+      - "forge.wynning.tech:host-gateway"
+    # Match the image's built-in user, which owns /data — a fresh named volume inherits
+    # that ownership, so the daemon can write runner-config.yml / cache / workdir. (The
+    # eleboucher reference used 1001 because it host-chowned a bind mount; we use a volume.)
+    user: "1000:1000"
+    working_dir: /data
+    volumes:
+      - data:/data
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        set -e
+        umask 077
+        cat > /data/runner-config.yml <<EOF
+        cache:
+          enabled: true
+          dir: /data/cache
+        container:
+          docker_host: tcp://forgejo-runner-dind:2375
+          # Job containers need the same hairpin workaround as the daemon above, but they
+          # can't use `host-gateway`: they are created by the dind daemon, so they live in
+          # dind's OWN nested bridge, whose gateway (172.17.0.1) is the dind container --
+          # that is exactly why `forgejo-runner-dind:host-gateway` on this line resolves
+          # correctly. Pointing forge.wynning.tech there would hit dind, not the VPS.
+          # The VPS host is reachable from inside dind as this project's bridge gateway,
+          # pinned to a fixed subnet below so the literal here stays stable.
+          # Without this, `git fetch` in a job hangs ~5min per attempt on the VPS's own
+          # public IP and checkout fails after 3 tries (~15m30s).
+          options: >-
+            --add-host=forgejo-runner-dind:host-gateway
+            --add-host=forge.wynning.tech:172.31.255.1
+          workdir_parent: /data/workdir
+        log:
+          level: info
+        runner:
+          capacity: 1
+          envs:
+            DOCKER_HOST: tcp://forgejo-runner-dind:2375
+          file: .runner
+          labels:
+            - ubuntu-latest:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+            - default:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+            - docker:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+          timeout: 3h
+        server:
+          connections:
+            forgejo:
+              url: https://forge.wynning.tech/
+              uuid: "$${FORGEJO_RUNNER_UUID}"
+              token: "$${FORGEJO_RUNNER_TOKEN}"
+        EOF
+        exec forgejo-runner daemon --config /data/runner-config.yml
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+    logging: *default-logging
+volumes:
+  dind-data:
+  data:
+networks:
+  # Fixed subnet so the gateway address is a stable literal for the job containers'
+  # --add-host above. Docker would otherwise auto-pick from 172.17.0.0/12 in creation
+  # order, and the value could change. Chosen at the top of that pool: dind allocates
+  # its nested networks as /16s from 172.17 upward, so it will not collide here.
+  default:
+    ipam:
+      config:
+        - subnet: 172.31.255.0/24
+          gateway: 172.31.255.1

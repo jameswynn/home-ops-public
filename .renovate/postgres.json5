@@ -1,0 +1,62 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  packageRules: [
+    {
+      // CNPG operand tags are `<pg-major>.<pg-minor>-<cnpg-build-revision>`, e.g. 16.1-13.
+      //
+      // Renovate's default `docker` versioning splits a tag at the first "-" and treats
+      // everything after it as an immutable compatibility suffix (the same mechanism that
+      // keeps `3.9-alpine` on alpine). For 16.1-13 that makes "13" the suffix, so the only
+      // candidates Renovate will even consider are other tags ending in "-13". The build
+      // revision is per-PG-minor and unbounded, so this is wrong in both directions:
+      //   - it would bump 16.1-13 -> 16.9-13 (a Jul 2025 build) and then sit there forever
+      //     while 16.9-22, -23, ... ship, because those have a "different suffix";
+      //   - a PG minor that never reaches revision 13 is skipped entirely.
+      //
+      // Reading the revision as the patch component instead gives 16.1.13 -> 16.9.22, which
+      // is the bump we actually want. Anchoring the regex to the bare `N.N-N` form also
+      // keeps us on the plain (default-flavour) tag stream and away from the -bookworm /
+      // -trixie / -minimal- / -standard- / -system- variants and the beta/rc tags.
+      description: "CloudNativePG operand image: read the build revision as a patch",
+      matchDatasources: ["docker"],
+      matchPackageNames: ["/cloudnative-pg\\/postgresql$/"],
+      versioning: "regex:^(?<major>\\d+)\\.(?<minor>\\d+)-(?<patch>\\d+)$",
+    },
+    {
+      // VectorChord operand tags are `<pg-major>-<vectorchord-version>`, e.g. 16-0.3.0 —
+      // the same "-" split, but the two halves mean the opposite of the CNPG image. Under
+      // default docker versioning the suffix "0.3.0" is the compatibility constraint and
+      // the PG major is the version, so Renovate would offer 16-0.3.0 -> 17-0.3.0: a
+      // Postgres major upgrade that freezes the extension. Exactly backwards.
+      //
+      // Putting the PG major in <compatibility> pins it (only 16-* candidates are eligible)
+      // and versions the extension as semver, so 16-0.3.0 -> 16-1.1.1 is offered as a
+      // major bump of VectorChord alone. No separate PG-major guard is needed here — the
+      // compatibility group is the guard.
+      description: "VectorChord operand image: pin the PG major, version the extension",
+      matchDatasources: ["docker"],
+      matchPackageNames: ["/cloudnative-vectorchord$/"],
+      versioning: "regex:^(?<compatibility>\\d+)-(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$",
+    },
+    {
+      // The repo extends docker:enableMajor, so majors are opened as PRs by default. These
+      // two are the deliberate exception: a "major" here is never a routine tag bump.
+      //   - postgresql 16 -> 17 is a CNPG major upgrade (offline pg_upgrade or logical
+      //     replication to a new Cluster), not something to merge from a PR diff.
+      //   - cloudnative-vectorchord 0.x -> 1.x changes the index format and needs a
+      //     reindex of Immich's embeddings.
+      //
+      // dependencyDashboardApproval rather than enabled:false on purpose: the update stays
+      // visible on the Dependency Dashboard behind a checkbox instead of disappearing.
+      // Silently hiding it is how the 16.1-13 pin managed to rot for two years.
+      description: "Postgres operand majors are migrations - require dashboard approval",
+      matchDatasources: ["docker"],
+      matchPackageNames: [
+        "/cloudnative-pg\\/postgresql$/",
+        "/cloudnative-vectorchord$/",
+      ],
+      matchUpdateTypes: ["major"],
+      dependencyDashboardApproval: true,
+    },
+  ],
+}

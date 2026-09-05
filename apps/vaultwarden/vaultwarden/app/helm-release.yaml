@@ -1,0 +1,255 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app vaultwarden
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  install:
+    remediation:
+      retries: 5
+  upgrade:
+    remediation:
+      retries: 5
+  values:
+    controllers:
+      main:
+        containers:
+          main:
+            image:
+              repository: ghcr.io/dani-garcia/vaultwarden
+              tag: 1.37.1
+
+            env:
+              DATA_FOLDER: "data"
+              ICON_CACHE_FOLDER: "data/icon_cache"
+              ATTACHMENTS_FOLDER: "data/attachments"
+              DOMAIN: https://vault.${SECRET_ROOT_DOMAIN}
+              SIGNUPS_ALLOWED: "false"
+              SMTP_FROM_NAME: Wynning Vault
+              SMTP_FROM: no-reply@${SECRET_ROOT_DOMAIN}
+              SMTP_SECURITY: off
+              TZ: "${CLUSTER_TZ}"
+              WEBSOCKET_ADDRESS: 0.0.0.0
+              WEBSOCKET_ENABLED: true
+              WEBSOCKET_PORT: &websocket-port 3012
+              SMTP_HOST: smtp.comms.svc.cluster.local
+              SMTP_PORT: 25
+              ADMIN_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: ADMIN_TOKEN
+              DATABASE_URL:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: DATABASE_URL
+
+            # CPU from 7d of Prometheus data: p50 0m, p95 1m, max 1m. The old
+            # 100m request over-reserved by ~200x. 25m is the practical request
+            # floor and leaves room for the argon2 KDF work on login. No CPU
+            # limit, per the cluster convention.
+            resources:
+              requests:
+                memory: 100Mi
+                cpu: 25m
+              limits:
+                memory: 2000Mi
+
+        initContainers:
+          init-db:
+            image:
+              repository: ghcr.io/home-operations/postgres-init
+              tag: 18.6
+              pullPolicy: IfNotPresent
+            envFrom:
+              - secretRef:
+                  name: vaultwarden-init-db
+
+    service:
+      main:
+        controller: main
+        ports:
+          http:
+            port: 80
+          websocket:
+            enabled: true
+            port: *websocket-port
+
+    # ingress:
+    #   main:
+    #     enabled: true
+    #     className: external-nginx
+    #     annotations:
+    #       external-dns.alpha.kubernetes.io/hostname: &host vault.${SECRET_ROOT_DOMAIN}
+    #       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    #       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    #     hosts:
+    #       - host: *host
+    #         paths:
+    #           - path: /
+    #             pathType: Prefix
+    #             service:
+    #               identifier: main
+    #               port: http
+    #           - path: /notifications/hub
+    #             pathType: Prefix
+    #             service:
+    #               identifier: main
+    #               port: websocket
+    #           - path: /notifications/hub/negotiate
+    #             pathType: Prefix
+    #             service:
+    #               identifier: main
+    #               port: http
+    #     tls:
+    #       - hosts:
+    #           - *host
+    #   admin:
+    #     enabled: true
+    #     className: "nginx"
+    #     annotations: {}
+    #     hosts:
+    #       - host: &adminHost vault.${SECRET_INTERNAL_DOMAIN}
+    #         paths:
+    #           - path: /admin
+    #             pathType: Prefix
+    #             service:
+    #               identifier: main
+    #               port: http
+    #     tls:
+    #       - hosts:
+    #           - *adminHost
+    #   # this is only here so that the admin endpoint can get to it
+    #   internal:
+    #     enabled: true
+    #     className: nginx
+    #     annotations:
+    #       gethomepage.dev/enabled: "true"
+    #       gethomepage.dev/name: "VaultWarden"
+    #       gethomepage.dev/description: "Private Instance of BitWarden"
+    #       gethomepage.dev/group: "Security"
+    #       gethomepage.dev/icon: "vaultwarden.png"
+    #       gethomepage.dev/weight: "20"
+    #       gethomepage.dev/pod-selector: "app.kubernetes.io/name = vaultwarden"
+    #       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    #       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    #     hosts:
+    #       - host: *adminHost
+    #         paths:
+    #           - path: /
+    #             pathType: Prefix
+    #             service:
+    #               identifier: main
+    #               port: http
+    #           - path: /notifications/hub
+    #             pathType: Prefix
+    #             service:
+    #               identifier: main
+    #               port: websocket
+    #           - path: /notifications/hub/negotiate
+    #             pathType: Prefix
+    #             service:
+    #               identifier: main
+    #               port: http
+    #     tls:
+    #       - hosts:
+    #           - *adminHost
+
+    # TODO: Make sure the admin endpoint cannot be reached
+    route:
+      main:
+        annotations:
+          # Pin the probe: the gatus sidecar otherwise auto-picks the first
+          # non-root rule path, which here is the /notifications/hub websocket
+          # port — a plain GET against it returns 503.
+          gatus.home-operations.com/endpoint: |
+            url: https://vault.${SECRET_ROOT_DOMAIN}/alive
+          external-dns.alpha.kubernetes.io/hostname: "vault.${SECRET_ROOT_DOMAIN}"
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "VaultWarden"
+          gethomepage.dev/description: "Private Instance of BitWarden"
+          gethomepage.dev/group: "Security"
+          gethomepage.dev/icon: "vaultwarden.png"
+          gethomepage.dev/weight: "20"
+          gethomepage.dev/pod-selector: "app.kubernetes.io/name = vaultwarden"
+        hostnames:
+          - "vault.${SECRET_ROOT_DOMAIN}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - identifier: main
+                port: 80
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /notifications/hub
+            backendRefs:
+              - identifier: main
+                port: *websocket-port
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /notifications/hub/negotiate
+            backendRefs:
+              - identifier: main
+                port: 80
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+          - name: envoy-internal
+            namespace: networking
+
+      # /admin is LAN-only. Both routes below match a longer path prefix than main's
+      # `/`, so Gateway API precedence (longest prefix wins) sends /admin here on
+      # whichever gateway it arrives at: served on envoy-internal, 404 on towonel.
+      admin:
+        hostnames:
+          - "vault.${SECRET_ROOT_DOMAIN}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /admin
+            backendRefs:
+              - identifier: main
+                port: 80
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+
+      admin-block:
+        annotations:
+          # Public 404 by design — nothing for Gatus to health-check here.
+          gatus.home-operations.com/enabled: "false"
+        hostnames:
+          - "vault.${SECRET_ROOT_DOMAIN}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /admin
+            filters:
+              - type: ExtensionRef
+                extensionRef:
+                  group: gateway.envoyproxy.io
+                  kind: HTTPRouteFilter
+                  name: vaultwarden-admin-blocked
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+
+    persistence:
+      data:
+        enabled: true
+        existingClaim: vaultwarden-data-pvc
+        globalMounts:
+          - path: /data

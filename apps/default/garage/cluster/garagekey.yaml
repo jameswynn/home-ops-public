@@ -1,0 +1,39 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: garage-owner
+spec:
+  clusterRef:
+    name: garage-cluster
+  allBuckets:
+    read: true
+    write: true
+    owner: true
+  # bucketPermissions:
+  #   - bucketRef:
+  #       name: wynning-tech
+  #     read: true
+  #     write: true
+  #     owner: true
+  #   - bucketRef:
+  #       name: sneaker-social
+  #     read: true
+  #     write: true
+  #     owner: true
+  #   - bucketRef:
+  #       name: blog-jameswynn-com
+  #     read: true
+  #     write: true
+  #     owner: true
+  #   - bucketRef:
+  #       name: blog-int-wynning-tech
+  #     read: true
+  #     write: true
+  #     owner: true
+  #   - bucketRef:
+  #       name: jameswynn-com
+  #     read: true
+  #     write: true
+  #     owner: true

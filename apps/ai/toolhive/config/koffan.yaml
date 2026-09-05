@@ -1,0 +1,82 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserver_v1beta1.json
+#
+# Koffan shopping-list MCP backend for Jonathon's secretary profile.
+#
+# No upstream Koffan MCP server exists as of 2026-08. The adapter is a
+# purpose-built FastMCP HTTP bridge wrapping the Koffan REST API
+# (GET/POST /api/v1/lists, item/section CRUD, POST /api/v1/batch, history).
+# Source lives at forge.wynning.tech/james/koffan-mcp — do not put adapter
+# source in home-ops. The image must be built and published before this
+# MCPServer will start; until then the pod will remain in an ImagePullBackOff
+# state (harmless — Cedar continues to deny all koffan_* calls while the pod
+# is absent, so no security gap opens).
+#
+# Digest: pin once forge.wynning.tech/james/koffan-mcp:v0.1.0 is published.
+# Format: append @sha256:<digest> to the image line below.
+#
+# Tool names (raw, without the koffan_ VMCP prefix — see authzconfig.yaml):
+#   get_lists, get_list, create_list, update_list, delete_list
+#   get_items, add_item, update_item, delete_item
+#   get_sections, add_section, update_section, delete_section
+#   batch_update, get_history
+# Verify exact names with `tools/list` post-deploy (see OIDC.md).
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: koffan
+spec:
+  # Pinned to the multi-architecture release manifest digest.
+  image: forge.wynning.tech/james/koffan-mcp:0.1.0@sha256:bb179ab63901272e7e052faabd6d1579981e577b6d81e74293e2ebde87fe50a3
+  transport: streamable-http
+  mcpPort: &port 8080
+  groupRef:
+    name: all
+  env:
+    - name: KOFFAN_URL
+      value: http://koffan.default.svc.cluster.local:8080
+    - name: FASTMCP_HOST
+      value: "0.0.0.0"
+    - name: MCP_HTTP_PATH
+      value: /mcp
+  secrets:
+    - name: toolhive-secrets
+      key: KOFFAN_API_TOKEN
+  podTemplateSpec:
+    spec:
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: mcp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          ports:
+            - name: mcp
+              containerPort: *port
+          startupProbe:
+            httpGet:
+              path: /health
+              port: mcp
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: mcp
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 128Mi

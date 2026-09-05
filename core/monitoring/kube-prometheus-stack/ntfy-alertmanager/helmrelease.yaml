@@ -1,0 +1,84 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app ntfy-alertmanager
+  namespace: monitoring
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  values:
+    controllers:
+      ntfy-alertmanager:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        containers:
+          app:
+            image:
+              repository: codeberg.org/xenrox/ntfy-alertmanager
+              tag: 1.0.0@sha256:2c94a0ebbffc481c787f7ca98988b54f4e1889a55bc734e305b97f593cd5af09
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: { drop: [ "ALL" ] }
+            # CPU from 7d of Prometheus data: p50 0m, p95 0.05m, max 0.2m — it
+            # only wakes up when an alert fires, and measured non-zero in 79 of
+            # 1324 samples. 25m is the practical request floor. No CPU limit,
+            # per the cluster convention.
+            resources:
+              requests:
+                memory: 50Mi
+                cpu: 25m
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 256Mi
+                ephemeral-storage: 200Mi
+    defaultPodOptions:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+    service:
+      app:
+        controller: ntfy-alertmanager
+        ports:
+          http:
+            port: &port 8080
+    route:
+      app:
+        annotations:
+          gatus.home-operations.com/endpoint: |
+            conditions:
+              - "[STATUS] == 401"
+          internal.wynning.tech/hostname: &host "{{ .Release.Name }}.${SECRET_INTERNAL_DOMAIN}"
+        hostnames:
+          - *host
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+
+    persistence:
+      # config:
+      #   type: emptyDir
+      #   globalMounts:
+      #     - path: /etc/ntfy-alertmanager/config
+      config-file:
+        type: secret
+        name: *app
+        globalMounts:
+          - path: /etc/ntfy-alertmanager/config
+            subPath: config.scfg
+            readOnly: true

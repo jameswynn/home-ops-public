@@ -1,0 +1,101 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: adguard-code
+  namespace: default
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  dependsOn:
+    - name: adguard-primary
+      namespace: default
+  values:
+    controllers:
+      main:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        containers:
+          main:
+            image:
+              repository: ghcr.io/coder/code-server
+              tag: 4.133.0
+            env:
+              TZ: ${CLUSTER_TZ}
+            args:
+              - --auth
+              - "none"
+              - --user-data-dir
+              - "/config/.vscode"
+              - --extensions-dir
+              - "/config/.vscode"
+              - "--port"
+              - "80"
+              - /config
+            # CPU from 7d of Prometheus data: p50 0m, p95 0m, max 3.7m — an
+            # editor nobody has open costs nothing. 25m is the practical
+            # request floor. No CPU limit, per the cluster convention.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 512Mi
+                ephemeral-storage: 10Mi
+              limits:
+                memory: 512Mi
+                ephemeral-storage: 20Mi
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                      # Run on same host as adguard
+                      - key: app.kubernetes.io/name
+                        operator: In
+                        values:
+                          - "adguard-primary"
+                  topologyKey: kubernetes.io/hostname
+    service:
+      main:
+        controller: main
+        ports:
+          http:
+            port: 80
+
+    route:
+      app:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "AdGuard Configs"
+          gethomepage.dev/description: "Edit AdGuard Configs"
+          gethomepage.dev/group: "DNS"
+          gethomepage.dev/icon: "code.png"
+          gethomepage.dev/weight: "30"
+          internal.wynning.tech/hostname: &host "{{ .Release.Name }}.${SECRET_INTERNAL_DOMAIN}"
+        hostnames:
+          - *host
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+
+    persistence:
+      config:
+        enabled: true
+        existingClaim: adguard-config

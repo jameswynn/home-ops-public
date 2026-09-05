@@ -1,0 +1,59 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: lobby
+  namespace: minecraft
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: minecraft
+  values:
+    image:
+      repository: ghcr.io/itzg/minecraft-server
+      tag: 2026.8.1
+    persistence:
+      storageClass: "longhorn"
+      dataDir:
+        enabled: true
+        Size: 5Gi
+    podSecurityContext:
+      runAsUser: 1000
+      runAsGroup: 1000
+      runAsNonRoot: true
+      fsGroup: 1000
+    resources:
+      requests:
+        memory: 2Gi
+        cpu: 250m
+      limits:
+        memory: 2Gi
+    extraEnv:
+      ENABLE_AUTOPAUSE: FALSE
+    minecraftServer:
+      spigetResources:
+        - 28140
+        - 6245
+        # - 14754
+        - 102931
+      modUrls:
+        - https://github.com/EssentialsX/Essentials/releases/download/2.20.1/EssentialsX-2.20.1.jar
+        - https://cdn.modrinth.com/data/Lu3KuzdV/versions/w3P6ufP1/CoreProtect-22.2.jar
+      eula: true
+      version: "LATEST"
+      type: PAPER
+      forceReDownload: true
+      onlineMode: false
+      difficulty: peaceful
+      maxTickTime: -1
+      serviceType: ClusterIP
+      gameMode: adventure
+      worldSaveName: 'Basic Lobby'
+      motd: "§fthe§ - §a§llobby§"
+      icon: https://www.freeiconspng.com/uploads/minecraft-server-icon-13.png
+      rcon:
+        enabled: false
+        port: 25575
+        password: "mc-rcon-2024"
+        serviceType: LoadBalancer

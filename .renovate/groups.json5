@@ -1,0 +1,62 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "packageRules": [
+    {
+      "description": "Authentik image and chart",
+      "groupName": "authentik",
+      "matchPackagePatterns": ["goauthentik", "authentik"],
+      "matchDatasources": ["docker", "github-releases", "helm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} group"
+      },
+      "separateMinorPatch": false
+    },
+    {
+      "description": "cert-manager image and chart",
+      "groupName": "cert-manager",
+      "matchPackagePatterns": ["cert-manager"],
+      "matchDatasources": ["docker", "github-releases", "helm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} group"
+      },
+      "separateMinorPatch": false
+    },
+    {
+      description: "Flux Operator Group",
+      groupName: "flux-operator",
+      matchDatasources: ["docker"],
+      matchPackageNames: ["/flux-operator/", "/flux-instance/", "/flux-operator-manifests/"],
+      group: {
+        commitMessageTopic: "{{{groupName}}} group",
+      },
+      minimumGroupSize: 3,
+    },
+    {
+      description: "Intel Device Plugins Group",
+      groupName: "intel-device-plugins",
+      matchDatasources: ["docker", "github-releases", "helm"],
+      matchPackageNames: ["/intel-device-plugins-operator/", "/intel-device-plugins-gpu/"],
+      group: {
+        commitMessageTopic: "{{{groupName}}} group",
+      },
+      minimumGroupSize: 2,
+    },
+    {
+      // Two pins for one binary: the mise tool in //mise.toml and FLATE_VERSION in
+      // .forgejo/workflows/flate.yaml. They must move together or a local
+      // `flate test` renders differently than the PR check does.
+      // extractVersion: upstream tags are v-prefixed, but both pins store the bare
+      // version (the workflow rebuilds the "v" into the download URL itself).
+      description: "flate CLI: mise pin + CI pin",
+      groupName: "flate",
+      matchDatasources: ["github-releases"],
+      matchPackageNames: ["home-operations/flate"],
+      extractVersion: "^v(?<version>.+)$",
+      group: {
+        commitMessageTopic: "{{{groupName}}} group",
+      },
+    },
+  ]
+}

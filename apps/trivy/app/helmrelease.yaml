@@ -1,0 +1,126 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.m00nlit.dev/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: trivy-operator
+spec:
+  interval: 5m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 0.32.1
+  url: oci://ghcr.io/aquasecurity/helm-charts/trivy-operator
+---
+# yaml-language-server: $schema=https://k8s-schemas.m00nlit.dev/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app trivy-operator
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: *app
+  values:
+    # tolerations:
+    #   - effect: NoSchedule
+    #     key: arm
+    #     value: "true"
+
+    serviceMonitor:
+      enabled: true
+
+    operator:
+      scanJobsConcurrentLimit: 3
+      scanJobTTL: 300s
+      scanJobTimeout: 20m
+      # etcd churn control. The operator is the cluster's largest keyspace
+      # writer: every expiring report is deleted and rescanned, and each rescan
+      # rewrites a vulnerabilityreport plus its (large) sbomreport.
+      #
+      # scannerReportTTL is the rescan cadence for *unchanged* workloads —
+      # 24h (chart default) -> 7d. Workload changes still rescan immediately
+      # (vulnerabilityScannerScanOnlyCurrentRevisions below), and Renovate turns
+      # images over often enough that most images are rescanned on update
+      # anyway. The trade is up to 7d before a newly published CVE shows up
+      # against an image that never changed.
+      #
+      # scanJobsRetryDelay 30s -> 5m stops a persistently failing scan from
+      # re-creating its Job (and rewriting its report) twice a minute.
+      #
+      # The chart has no scan schedule/cron; these two knobs are the cadence.
+      scannerReportTTL: "168h"
+      scanJobsRetryDelay: "5m"
+      builtInTrivyServer: true
+      vulnerabilityScannerScanOnlyCurrentRevisions: true
+      configAuditScannerScanOnlyCurrentRevisions: true
+      annotations:
+        reloader.stakater.com/auto: "true"
+
+    trivy:
+      slow: true
+      ignoreUnfixed: true
+      storageClassName: longhorn
+      storageSize: "10Gi"
+      # Scan job resources. The chart's 500m default was the binding constraint:
+      # scan jobs sat pinned at exactly 500m for 99.6% of their CFS periods.
+      # These are short-lived bursts and scanJobsConcurrentLimit caps them at 3,
+      # so a 1-core ceiling is worth ~3 cores worst case on a 26-core cluster.
+      #
+      # This is the one place in the cluster that deliberately keeps a CPU
+      # limit. 7d of Prometheus data says the raise to 1 core did not finish
+      # the job either — scan jobs still burn 98-100% of their CFS periods
+      # throttled, at an average 450-500m over their ~1m lifetime. A trivy
+      # scan parallelises layer decompression across every core it is given,
+      # so it will saturate any quota; there is no "right" limit derived from
+      # observed usage, only a decision about how much of the cluster a burst
+      # of 3 concurrent scans may take. 1 core each stays that decision.
+      # Removing the limit here would let scans take the whole node.
+      resources:
+        requests:
+          cpu: 100m
+          memory: 100M
+          # Vulnerability DB + artifact extraction spills out of the 20Mi
+          # LimitRange default; 200Mi covers the DB cache and layer cache.
+          ephemeral-storage: "200Mi"
+        limits:
+          cpu: 1
+          memory: 500M
+          ephemeral-storage: "200Mi"
+      server:
+        # CPU from 7d of Prometheus data: p50 0.5m, p95 15.7m, max 43.6m —
+        # idle except while it serves a scan. The 1000m limit was throttling
+        # 20.4% of CFS periods at p95 despite that, since it fans out per
+        # request. Unlike the scan jobs this one is a single long-running
+        # server, so the limit just goes. No CPU limit, per the cluster
+        # convention. The chart ships limits.cpu: 1 by default and Helm
+        # deep-merges it back in if the key is simply dropped, so it has to be
+        # explicitly nulled out.
+        resources:
+          requests:
+            cpu: 50m
+            memory: 500Mi
+            ephemeral-storage: "2Gi"
+          limits:
+            cpu: null
+            memory: 500Mi
+            ephemeral-storage: "2Gi"
+
+    # trivyOperator:
+    #   skipResourceByLabels: "app.kubernetes.io/created-by=volsync"
+
+    nodeCollector:
+      tolerations:
+        - effect: NoSchedule
+          key: arm
+          value: "true"
+          operator: "Equal"
+
+    resources:
+      requests:
+        cpu: 32m
+        memory: 1520Mi
+      limits:
+        memory: 1520Mi

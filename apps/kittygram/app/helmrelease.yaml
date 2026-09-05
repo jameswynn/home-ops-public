@@ -1,0 +1,107 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app kittygram
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  interval: 1h
+  values:
+    controllers:
+      kittygram:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        containers:
+          app:
+            image:
+              repository: forge.wynning.tech/james/kittygram # {"$imagepolicy": "kittygram:kittygram:name"}
+              tag: 1.2.0 # {"$imagepolicy": "kittygram:kittygram:tag"}
+            env:
+              PORT: &port 8080
+              # nginx's resolver needs a literal IP. The image default is
+              # 127.0.0.11, Docker's embedded DNS, which does not exist in a pod.
+              RESOLVER: "10.43.0.10"
+              REDIS_HOST: kittygram-dragonfly
+              REDIS_PORT: "6379"
+              NUM_WORKERS: "2"
+              TZ: ${CLUSTER_TZ}
+              # These reach the nginx workers only because the image widens
+              # nginx's `env` allowlist (james/containers#4). nginx clears the
+              # environment for workers and kittygram re-evaluates config.lua
+              # inside the worker, so an unlisted var reads nil and silently
+              # falls back to its default -- it does not error.
+              DEFAULT_THEME: catppuccin_frappe # a key from upstream conf/themes.lua
+              ABOUT_MESSAGE: "<p>A private Instagram frontend.</p>"
+              DISABLE_LOGGING: "true"
+              SECRET:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: SECRET
+            probes:
+              # Default TCP probes, deliberately. An httpGet on / would render the
+              # Instagram popular feed, tying pod liveness to Instagram being
+              # reachable, so a rate-limit would turn into a restart loop.
+              liveness: &probes
+                enabled: true
+              readiness: *probes
+            resources:
+              requests:
+                # Floor; no observed p95 yet. No CPU limit, per cluster convention.
+                cpu: 25m
+                ephemeral-storage: 32Mi
+              limits:
+                memory: 512Mi
+                # Overrides the 64Mi default from components/limits: nginx buffers
+                # request bodies and proxied media to temp files under /app.
+                ephemeral-storage: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              # Cannot be true: `lapis serve` writes nginx.conf.compiled into the
+              # /app cwd and nginx creates logs/ and *_temp/ beside it. The image
+              # chowns /app to 65534 precisely so this works.
+              readOnlyRootFilesystem: false
+              capabilities: {drop: ["ALL"]}
+    defaultPodOptions:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+    service:
+      app:
+        controller: kittygram
+        ports:
+          http:
+            port: *port
+    route:
+      app:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "kittygram"
+          gethomepage.dev/description: "Instagram Frontend"
+          gethomepage.dev/group: "Applications"
+          gethomepage.dev/icon: "instagram.png"
+          gethomepage.dev/weight: "50"
+        hostnames:
+          - "kittygram.${SECRET_ROOT_DOMAIN}"
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+          - name: envoy-towonel
+            namespace: networking
+        rules:
+          # Traffic lands on anubis, which proxies back to the kittygram service.
+          - backendRefs:
+              - name: kittygram-anubis
+                port: 8080
+    persistence:
+      data:
+        enabled: true
+        existingClaim: *app
+        globalMounts:
+          - path: /data

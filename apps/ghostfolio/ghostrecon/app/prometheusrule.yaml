@@ -1,0 +1,344 @@
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/prometheusrule_v1.json
+#
+# Copied verbatim from ghostrecon's own deploy/prometheusrule.yaml — that is the
+# canonical copy, and docs/metrics.md points at it. Re-copy rather than edit here.
+# Last synced from ghostrecon main at d57b15c (PR #51).
+#
+# DIVERGED FROM UPSTREAM, deliberately: the two Unreachable alerts below carry
+# upstream PR #53's staleness change (21600 -> 90000) ahead of it merging, so
+# the cluster stops alerting ~17h a day against a daily schedule. The next
+# re-sync from upstream main folds this back in and the divergence disappears.
+#
+# The `release: kube-prometheus-stack` label below is a no-op in this cluster:
+# core/monitoring/kube-prometheus-stack sets `ruleSelectorNilUsesHelmValues:
+# false`, so every PrometheusRule is picked up regardless of labels. Left in
+# place to keep this a clean copy of upstream.
+#
+# Both config.yaml dependencies the header below calls out are satisfied by
+# config.sops.yaml: the schedule is daily (`0 6 * * *`), which the staleness
+# windows assume, and `metrics.per-account-labels: true` is set explicitly, so
+# GhostreconCashMismatch, GhostreconUnconfiguredPortfolio and
+# GhostreconProviderError all read the identifying gauges rather than quietly
+# never firing.
+#
+# --- upstream header follows ---
+#
+# Alert rules for ghostrecon. This file is the canonical copy — docs/metrics.md
+# describes what each metric means and points here for the rules themselves.
+#
+# Requires the Prometheus operator. Without it, lift the `groups:` list into
+# whatever rule file the Prometheus you run already loads.
+#
+# Two thresholds below track settings in config.yaml rather than being absolute,
+# and are marked where they appear:
+#
+#   - the staleness windows assume a roughly daily `schedule.cron`
+#   - GhostreconCashMismatch, GhostreconUnconfiguredPortfolio and
+#     GhostreconProviderError all read a gauge family that
+#     `metrics.per-account-labels` turns off. Each carries a fallback
+#     expression in its comment for anyone running with it off.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ghostrecon
+  labels:
+    # Must match the operator's `ruleSelector`, or the rules are ignored
+    # silently. `release: kube-prometheus-stack` is that chart's default;
+    # confirm with `kubectl get prometheus -o yaml | grep -A5 ruleSelector`.
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: ghostrecon
+      rules:
+        # The upstream is unreachable. Staleness-based on purpose: a run that is
+        # not happening produces no failure samples to rate, so an alert built on
+        # error rates would stay green through a total outage.
+        #
+        # A day plus an hour of slack, because the threshold has to outlast the
+        # gap between runs and the schedule is daily. A shorter window fires in
+        # the ordinary quiet stretch between one run and the next.
+        - alert: GhostreconSimpleFinUnreachable
+          expr: |
+            (time() - ghostrecon_target_last_success_timestamp_seconds{peer_service="simplefin"}) > 90000
+            or absent(ghostrecon_target_last_success_timestamp_seconds{peer_service="simplefin"})
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: No successful SimpleFIN fetch in 25 hours
+            description: >-
+              Reconciles are running against nothing, or not running at all.
+              Note this is about the bridge as a whole: one expired institution
+              leaves this green, because the fetch still succeeds. That case is
+              GhostreconProviderError, which names the institution.
+
+        - alert: GhostreconGhostfolioUnreachable
+          expr: |
+            (time() - ghostrecon_target_last_success_timestamp_seconds{peer_service="ghostfolio"}) > 90000
+            or absent(ghostrecon_target_last_success_timestamp_seconds{peer_service="ghostfolio"})
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: No successful Ghostfolio fetch in 25 hours
+            description: >-
+              Ghostfolio is down, moved, or the API token has been revoked.
+              Nothing can be reconciled or applied until it answers again;
+              a plan written now would diff against no holdings at all.
+
+        # There is deliberately no equivalent for peer_service="rapidapi".
+        # Valuations are fetched at most once a property per month, by design
+        # (see docs/valuations.md), so "no recent success" is the normal state
+        # at any window and the alert would fire permanently. No threshold
+        # distinguishes a healthy TTL from a broken credential, because a
+        # working setup and a dead one look identical for weeks at a time —
+        # the failure surfaces as a provider_error data issue when a fetch is
+        # actually attempted, which is the only moment the answer is knowable.
+
+        # Nothing has reconciled in a day.
+        #
+        # THRESHOLD TRACKS config.yaml: 86400s assumes a schedule that runs at
+        # least daily. Tighten it for a more frequent cron, or the alert stops
+        # detecting anything; loosen it for a weekly one, or it fires forever.
+        - alert: GhostreconReconcileStale
+          expr: |
+            (time() - ghostrecon_run_last_success_timestamp_seconds{run_kind="reconcile"}) > 86400
+            or absent(ghostrecon_run_last_success_timestamp_seconds{run_kind="reconcile"})
+          for: 30m
+          labels: {severity: critical}
+          annotations:
+            summary: No successful reconcile in 24 hours
+            description: >-
+              Either the scheduler is not ticking or every tick is failing.
+              Check the pod is running and look for missed ticks — they are
+              counted and skipped, never replayed, so a pod that was down over
+              its scheduled time simply never ran.
+
+        - alert: GhostreconConsecutiveFailures
+          # Pinned to run_mode="scheduled". A one-shot run writes the same
+          # gauge under run_mode="oneshot", but it has no history to count from
+          # and so never exceeds 1 — matching it here would add a series that
+          # can never fire, and matching *neither* mode would let a one-shot run
+          # overwrite a real streak and silence this.
+          expr: >-
+            ghostrecon_run_consecutive_failures{run_kind="reconcile",run_mode="scheduled"} >= 3
+          labels: {severity: critical}
+          annotations:
+            summary: Three or more reconciles have failed in a row
+            description: >-
+              A failing run does not stop the service, so this will continue
+              until something is fixed. This series is written by the scheduler,
+              so a value here means the schedule is firing and the work itself
+              is broken. The service publishes 0 when it becomes ready, so the
+              series exists from startup rather than from the first tick.
+
+        # A balance disagrees with its own cash holdings. Per-account, because
+        # the fix is per-account: add the sweep ticker to that portfolio's
+        # cash-assets in config.yaml.
+        #
+        # DEPENDS ON config.yaml: grouping by ghostrecon_account_name requires
+        # `metrics.per-account-labels` on, which is the default. With it off the
+        # label does not exist and this rule silently never fires.
+        - alert: GhostreconCashMismatch
+          expr: |
+            max by (ghostrecon_account_name) (
+              ghostrecon_account_data_issues{issue="cash_balance_mismatch"}
+            ) > 0
+          for: 1h
+          labels: {severity: warning}
+          annotations:
+            summary: "{{ $labels.ghostrecon_account_name }} disagrees with its cash holdings"
+            description: >-
+              A cash instrument is not being recognised as cash, so it is being
+              reconciled as a position instead of as the account balance. Add
+              its ticker to that portfolio's cash-assets in config.yaml.
+
+        # A portfolio nobody configured. Silent before this existed, and a bare
+        # count before the detail gauge did — which told you to go configure
+        # something without saying what, so the answer lived only in the logs.
+        #
+        # Grouped by subject rather than summed: the fix is per portfolio, and
+        # one alert per portfolio is one thing to go and do.
+        #
+        # DEPENDS ON config.yaml: ghostrecon_data_issue_detail requires
+        # `metrics.per-account-labels` on, which is the default. With it off,
+        # fall back to the unnamed aggregate, which always exists:
+        #   ghostrecon_plan_portfolios{disposition="unmapped"} > 0
+        - alert: GhostreconUnconfiguredPortfolio
+          expr: |
+            max by (ghostrecon_source, ghostrecon_subject, ghostrecon_subject_name) (
+              ghostrecon_data_issue_detail{issue="portfolio_unmapped"}
+            ) > 0
+          for: 1h
+          labels: {severity: warning}
+          annotations:
+            summary: "Portfolio {{ $labels.ghostrecon_subject }} is neither mapped nor ignored"
+            description: >-
+              {{ $labels.ghostrecon_source }} returned
+              {{ $labels.ghostrecon_subject_name }} with no entry in
+              config.yaml, so it is being dropped from every plan. Usually a
+              newly opened account. Give it an `action: map` with a Ghostfolio
+              account UUID, or an explicit `action: ignore` to say the omission
+              is deliberate.
+
+        # One institution needs re-authenticating while the provider as a whole
+        # is fine.
+        #
+        # This has no equivalent among the reachability alerts and cannot have
+        # one: the SimpleFIN fetch succeeds, so
+        # ghostrecon_target_last_success_timestamp_seconds{peer_service="simplefin"}
+        # stays green throughout and the expired connection is invisible to it.
+        # The account simply stops being reconciled, and the plan looks healthy
+        # while the balance in Ghostfolio ages.
+        #
+        # The subject is the provider's own error text, because SimpleFIN's
+        # `errors` is an array of prose with no institution field to read — but
+        # that prose is what names the bank, which is what this needs to say.
+        #
+        # DEPENDS ON config.yaml: as above. With `per-account-labels` off, fall
+        # back to the unnamed aggregate:
+        #   increase(ghostrecon_data_issues_total{issue="provider_error"}[1d]) > 0
+        - alert: GhostreconProviderError
+          expr: |
+            max by (ghostrecon_source, ghostrecon_subject) (
+              ghostrecon_data_issue_detail{issue="provider_error"}
+            ) > 0
+          for: 1h
+          labels: {severity: warning}
+          annotations:
+            summary: "{{ $labels.ghostrecon_source }}: {{ $labels.ghostrecon_subject }}"
+            description: >-
+              A connection at the provider needs attention — usually
+              re-authentication at the SimpleFIN bridge. Everything else
+              reconciled normally, which is why no reachability alert fired.
+              The alert clears on the first run after the connection is fixed.
+              An institution declared under `connections:` with
+              `expect-auth-errors` never fires this; it is judged on staleness
+              instead, so if one of these is firing constantly for a connection
+              you already know about, declare it rather than muting the alert.
+
+        # Reporting success against data it never re-checked.
+        - alert: GhostreconStaleCacheUsed
+          expr: increase(ghostrecon_data_issues_total{issue="stale_cache_used"}[1d]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: A run served cached data instead of fetching
+            description: >-
+              The run reported success against data it did not re-check, so the
+              plan describes the past. Service mode forces a refresh on every
+              tick, so seeing this there means the fetch failed and the cache
+              was the fallback — look for the fetch error in the same run.
+
+        # An import that will create a duplicate asset in Ghostfolio.
+        - alert: GhostreconDuplicateAssetRisk
+          expr: increase(ghostrecon_data_issues_total{issue="activity_missing_data_source"}[1d]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: A planned activity carries no data source
+            description: >-
+              Ghostfolio matches an import to an existing asset on symbol AND
+              dataSource together, so applying this creates a duplicate MANUAL
+              asset next to the real one. Fix it before applying — cleaning up
+              afterwards means deleting activities by hand.
+
+        # A priced asset that cannot be priced. Only reachable with a
+        # `target: asset` mapping, so this stays silent until one exists.
+        - alert: GhostreconAssetTargetUnpriceable
+          expr: increase(ghostrecon_data_issues_total{issue="asset_target_quantity_missing"}[1d]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: An asset-target holding has value but no quantity
+            description: >-
+              No unit price can be derived from a value alone, so nothing is
+              written for that holding and the asset silently stops being
+              revalued — the plan looks healthy while the number in Ghostfolio
+              ages. Check what the provider is reporting for it.
+
+        # Runs creeping toward the scheduling interval, which silently stretches
+        # a half-hourly schedule into an hourly one.
+        #
+        # THRESHOLD TRACKS config.yaml: 900s is a quarter of an hourly schedule.
+        # Set it to roughly half the actual interval.
+        - alert: GhostreconRunDurationApproachingInterval
+          expr: |
+            histogram_quantile(0.9,
+              sum by (le) (rate(ghostrecon_run_duration_seconds_bucket{run_kind="reconcile"}[6h]))
+            ) > 900
+          for: 1h
+          labels: {severity: warning}
+          annotations:
+            summary: Reconciles are taking a large fraction of the interval
+            description: >-
+              Runs cannot overlap — the scheduler and the API share one
+              single-permit slot — so a run that outlasts its interval does not
+              queue, it causes the next tick to be counted as missed and
+              skipped. The schedule quietly becomes a slower one than
+              config.yaml says.
+
+        # An auto-apply that a safeguard stopped.
+        #
+        # This is the one alert the safeguards feature genuinely depends on. A
+        # blocked auto-apply is deliberately NOT a failed run — restarting a
+        # container does not clear a safeguard, so failing would only move the
+        # `max-consecutive-failures` streak and lose the operator the plan they
+        # were meant to read. Nothing else about the process changes when one
+        # trips, which means without this alert the instance looks entirely
+        # healthy while having quietly stopped applying.
+        - alert: GhostreconApplyBlockedBySafeguard
+          expr: increase(ghostrecon_apply_blocked_total[1h]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: An apply was refused because a safeguard was exceeded
+            description: >-
+              A plan moved an account further than the limits in config.yaml
+              allow, so nothing was sent. The plan is still in OUTPUT_DIR and
+              needs a person: the `rule` label says which limit, and the run's
+              log names the account and both figures. Either the provider
+              answered with bad data — a partial holdings list is the usual
+              cause — or the move is real and the limit wants raising. Apply it
+              by hand with `ghostrecon apply --force` once you have decided.
+              Reconciliation itself is unaffected and keeps writing plans.
+
+        # A mapped portfolio whose data has stopped moving.
+        #
+        # The signal a broken connection does NOT give you. SimpleFIN keeps
+        # serving an institution's last known values alongside its error, so
+        # the account reconciles cleanly and proposes nothing while the figures
+        # age — and an institution can go stale having never reported an error
+        # at all, which `GhostreconProviderError` would never catch.
+        #
+        # THRESHOLD LIVES IN config.yaml, not here: `freshness.max-stale-days`
+        # globally, or `max-stale-days` on a `connections:` entry for one that
+        # legitimately moves monthly. This fires on whatever that decided.
+        - alert: GhostreconPortfolioStale
+          expr: increase(ghostrecon_data_issues_total{issue="portfolio_stale"}[1d]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: A mapped portfolio's data is older than its limit
+            description: >-
+              The account still reconciles, so nothing looks wrong — the plan is
+              built from figures that stopped moving. Usually the institution
+              needs re-authenticating at the provider. If it moves this slowly
+              on purpose, raise `max-stale-days` on its `connections:` entry
+              rather than silencing the alert;
+              `ghostrecon_data_issue_detail{issue="portfolio_stale"}` names which
+              portfolio when per-account labels are on.
+
+        # A notification that could not be delivered.
+        #
+        # Notifications exist because a blocked auto-apply is otherwise silent.
+        # A relay that has stopped accepting mail reproduces that silence one
+        # level up — the run reports what it should, the send fails, and the
+        # only person who would have found out is the one who never got the
+        # message. Delivery deliberately cannot fail a run, so nothing else
+        # about the process changes when this happens.
+        - alert: GhostreconNotificationFailed
+          expr: increase(ghostrecon_notifications_total{outcome="failed"}[1h]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: A notification could not be delivered
+            description: >-
+              Something needed attention and the email did not get out, so
+              whatever raised it is now only in the container log. The `reason`
+              label says what was being reported. Check the relay, the
+              credentials in GHOSTRECON_SMTP_USERNAME/PASSWORD, and whether
+              egress to the submission port is allowed from this namespace.

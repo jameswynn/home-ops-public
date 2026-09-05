@@ -1,0 +1,238 @@
+---
+# yaml-language-server: $schema=https://frigate.${SECRET_INTERNAL_DOMAIN}/api/config/schema.json
+# https://docs.frigate.video/configuration/reference/
+version: 0.17-0
+
+logger:
+  default: info
+  logs:
+    frigate.record.maintainer: debug
+    #   frigate.record: debug
+
+tls:
+  enabled: false
+
+auth:
+  enabled: false
+
+proxy:
+  separator: '|'
+  header_map:
+    user: x-authentik-username
+    role: x-authentik-groups
+    role_map:
+      admin:
+        - authentik Admins
+mqtt:
+  host: mosquitto.home.svc.cluster.local
+  topic_prefix: frigate
+
+database:
+  path: /config/frigate.db
+
+detectors:
+  # coral:
+  #   type: edgetpu
+  #   device: usb
+  ov_0:
+    type: openvino
+    device: GPU
+
+model:
+  # yolov9s 320x320 openvino
+  # path: plus://32a526cf7f2b61076a861a6edf4d0f05
+  # yolov9s 640x640 openvino
+  path: plus://ba01e988083d8a3359f77f085cc0c218
+  # width: 300
+  # height: 300
+  # input_tensor: nhwc
+  # input_pixel_format: bgr
+  # path: /openvino-model/ssdlite_mobilenet_v2.xml
+  # labelmap_path: /openvino-model/coco_91cl_bkgr.txt
+
+ffmpeg:
+  # global_args: -hide_banner -loglevel warning -threads 2
+  # hwaccel_args: preset-vaapi disabled: surface-sync crashes on this iGPU when shared with OpenVINO
+  # hwaccel_args:
+  # - -hwaccel
+  # - vaapi
+  # - -hwaccel_device
+  # - /dev/dri/renderD128
+  # - -hwaccel_output_format
+  # - yuv420p
+  # https://github.com/blakeblackshear/frigate/issues/3296
+  # output_args:
+  #   record: -f segment -segment_time 10 -segment_format mp4 -reset_timestamps 1 -strftime 1 -c:v copy -ar 44100 -c:a aac
+  output_args:
+    record: preset-record-generic-audio-aac
+
+face_recognition:
+  enabled: true
+
+snapshots:
+  enabled: true
+  timestamp: false
+  bounding_box: true
+  crop: true
+  # height: 1944
+  quality: 100
+  retain:
+    default: 7
+
+record:
+  enabled: true
+  alerts:
+    retain:
+      days: 3
+      mode: active_objects
+  detections:
+    retain:
+      days: 14
+      mode: active_objects
+
+  continuous:
+    days: 3
+  motion:
+    days: 3
+objects:
+  track:
+    - person
+    - face
+  filters:
+    person:
+      min_area: 22500 # 150*150
+      max_area: 24000000
+      threshold: 0.7
+
+detect:
+  fps: 5
+  enabled: true
+
+# birdseye:
+#   enabled: True
+#   mode: continuous
+#   restream: False
+#   width: 1920
+#   height: 1080
+#   quality: 4
+
+go2rtc:
+  webrtc:
+    candidates:
+      - frigate.{FRIGATE_INTERNAL_DOMAIN}:8555
+      - stun:8555
+  streams:
+    frigate_porch_lq:
+      - rtsp://{FRIGATE_AMCREST_USERNAME}:{FRIGATE_AMCREST_PASSWORD}@amcrest1.{FRIGATE_IOT_DOMAIN}:554/cam/realmonitor?channel=1&subtype=1
+    frigate_porch_hq:
+      - rtsp://{FRIGATE_AMCREST_USERNAME}:{FRIGATE_AMCREST_PASSWORD}@amcrest1.{FRIGATE_IOT_DOMAIN}:554/cam/realmonitor?channel=1&subtype=0
+    frigate_driveway_lq:
+      - rtsp://{FRIGATE_AMCREST_USERNAME}:{FRIGATE_AMCREST_PASSWORD}@amcrest2.{FRIGATE_IOT_DOMAIN}:554/cam/realmonitor?channel=1&subtype=1
+    frigate_driveway_hq:
+      - rtsp://{FRIGATE_AMCREST_USERNAME}:{FRIGATE_AMCREST_PASSWORD}@amcrest2.{FRIGATE_IOT_DOMAIN}:554/cam/realmonitor?channel=1&subtype=0
+    frigate_living_room_lq:
+      - rtsp://{FRIGATE_TAPO_USERNAME}:{FRIGATE_TAPO_PASSWORD}@tapo-camera-living-room.{FRIGATE_IOT_DOMAIN}:554/stream2
+    frigate_living_room_hq:
+      - ffmpeg:rtsp://{FRIGATE_TAPO_USERNAME}:{FRIGATE_TAPO_PASSWORD}@tapo-camera-living-room.{FRIGATE_IOT_DOMAIN}:554/stream1#video=copy#audio=copy#audio=pcm
+      # - ffmpeg:frigate_living_room_hq#audio=aac
+      # - ffmpeg:frigate_living_room_hq#audio=opus
+      - tapo://{FRIGATE_TAPO_CLOUD_PASSWORD}@tapo-camera-living-room.{FRIGATE_IOT_DOMAIN}
+
+cameras:
+  frigate_tapo_living_room:
+    # mqtt:
+    #   height: 1440
+    #   quality: 100
+    ffmpeg:
+      inputs:
+        - path: rtsp://localhost:8554/frigate_living_room_lq
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+        - path: rtsp://localhost:8554/frigate_living_room_hq
+          input_args: preset-rtsp-restream
+          roles:
+            - record
+    detect:
+      width: 640
+      height: 360
+    live:
+      streams:
+        main_stream: frigate_living_room_hq
+    webui_url: http://tapo-camera-living-room.{FRIGATE_IOT_DOMAIN}
+    objects:
+      mask: &livingRoomMasks
+        - 0.433,0.049,0.528,0.054,0.528,0.153,0.432,0.144 # TV
+    motion:
+      mask: *livingRoomMasks
+
+  frigate_porch:
+    # mqtt:
+    #   height: 1944
+    #   quality: 100
+    ffmpeg:
+      # output_args:
+      #   record: preset-record-generic-audio-copy
+      inputs:
+        - path: rtsp://localhost:8554/frigate_porch_lq
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+        - path: rtsp://localhost:8554/frigate_porch_hq
+          input_args: preset-rtsp-restream
+          roles:
+            - record
+    detect:
+      width: 704
+      height: 480
+      # fps: 7
+    live:
+      streams:
+        main_stream: frigate_porch_hq
+    webui_url: http://amcrest1.{FRIGATE_IOT_DOMAIN}
+    objects:
+      mask: &porchMasks
+        - 0.205,0.323,0.199,0.422,0.243,0.503,0.304,0.5,0.333,0.426 # Small bush on right
+        # Stuff on door
+        - 0.855,0.115,0.887,0.323,0.857,0.494,0.836,0.352
+        # Pot under doorbell
+        - 0.617,0.708,0.801,0.738,0.781,0.923,0.606,0.873
+        # Plants on the left
+        - 0.091,0.651,0.122,0.6,0.207,0.572,0.282,0.596,0.328,0.675,0.331,0.775
+    motion:
+      mask: *porchMasks
+
+  frigate_driveway:
+    # mqtt:
+    #   height: 1944
+    #   quality: 100
+    ffmpeg:
+      # output_args:
+      #   record: preset-record-generic-audio-copy
+      inputs:
+        - path: rtsp://localhost:8554/frigate_driveway_lq
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+        - path: rtsp://localhost:8554/frigate_driveway_hq
+          input_args: preset-rtsp-restream
+          roles:
+            - record
+    detect:
+      width: 704
+      height: 480
+      # fps: 7
+    live:
+      streams:
+        main_stream: frigate_driveway_hq
+    motion:
+      mask:
+        #- 150,0,640,0,640,222,469,139,316,83,219,61,156,61
+        #- 0.234,0,1,0,1,0.486,0.733,0.29,0.494,0.173,0.342,0.127,0.224,0.122
+        - 0.229,0,1,0,1,0.505,0.724,0.299,0.483,0.185,0.342,0.142,0.212,0.137
+    objects:
+      mask:
+        #- 150,0,640,0,640,222,469,139,316,83,219,61,156,61
+        #- 0.234,0,1,0,1,0.486,0.733,0.29,0.494,0.173,0.342,0.127,0.224,0.122
+        - 0.229,0,1,0,1,0.505,0.724,0.299,0.483,0.185,0.342,0.142,0.212,0.137
+    webui_url: http://amcrest2.{FRIGATE_IOT_DOMAIN}

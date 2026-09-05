@@ -1,0 +1,18 @@
+---
+# The Joplin profile: a local copy of the notes and their SQLite database.
+# Everything in it is reconstructible by syncing again, so it is a cache and
+# gets no VolSync policy — but it is persisted so a restart does not trigger a
+# full resync against Joplin Server. Attachments are not downloaded
+# (sync.resourceDownloadMode=manual in the image), so this holds roughly the
+# size of the note text; grow it if the profile ever outgrows it.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: joplin-mcp-profile
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: longhorn

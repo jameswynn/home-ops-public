@@ -1,0 +1,37 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# Caddy L4 edge — terminates ACME TLS for the hub's own hostname and SNI-routes all
+# other :443 traffic (tunnelled app hostnames) to the towonel hub. Adapted from
+# eleboucher/homelab docker/vps/03-edge (anubis / registry / S3 / openpgp backends
+# stripped). ACME_EMAIL is injected by doco-cd from Bitwarden (see ../.doco-cd.yaml).
+services:
+  caddy:
+    image: ghcr.io/bjw-s-labs/caddy-l4:2.11.4
+    container_name: caddy
+    restart: unless-stopped
+    environment:
+      CADDY_ACME_EMAIL: ${ACME_EMAIL}
+      # Hostnames Caddy terminates TLS for itself (the hub's HTTP API/dashboard).
+      # Tunnelled app hostnames are NOT listed — they hit the L4 default route to the hub.
+      VPS_LOCAL_HOSTS: towonel.wynning.tech
+    ports:
+      # IPv4, all interfaces. For IPv6 (AAAA records) enable Docker IPv6 and add
+      # "[::]:80:80" / "[::]:443:443", or bind specific VPS IPs. The echo pilot uses A only.
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+volumes:
+  caddy-data:
+  caddy-config:
+configs:
+  caddyfile:
+    file: ./config/Caddyfile
+networks:
+  default:
+    name: edge
+    external: true

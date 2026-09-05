@@ -1,0 +1,188 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: flux-instance
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: flux-instance
+  interval: 1h
+  values:
+    instance:
+      distribution:
+        artifact: oci://ghcr.io/controlplaneio-fluxcd/flux-operator-manifests:v0.58.1
+      cluster:
+        networkPolicy: false
+      components:
+        - source-controller
+        - kustomize-controller
+        - helm-controller
+        - notification-controller
+        - image-reflector-controller
+        - image-automation-controller
+        - source-watcher
+      sync:
+        kind: GitRepository
+        # url: ssh://git@forgejo-ssh.dev.svc.cluster.local:2222/james/home-ops.git
+        url: https://forge.wynning.tech/james/home-ops
+        # url: ssh://git@github.com/jameswynn/flux-cluster
+        ref: refs/heads/main
+        path: /flux
+        interval: 1h
+        pullSecret: private-apps-forgejo
+        # pullSecret: flux-system
+      kustomize:
+        patches:
+          # Increase the number of workers
+          - patch: |-
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --concurrent=10
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --requeue-dependency=5s
+            target:
+              kind: Deployment
+              name: (kustomize-controller|helm-controller|source-controller)
+          # Increase the memory limits
+          - patch: |-
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: all
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: manager
+                        resources:
+                          limits:
+                            memory: 2Gi
+            target:
+              kind: Deployment
+              name: (kustomize-controller|helm-controller|source-controller)
+          # Raise the kustomize-controller CPU request. It averages ~66m but
+          # bursts to ~950m during reconcile storms (--concurrent=20, in-memory
+          # builds) and was throttled in 17% of its CFS periods against the
+          # distribution's default 100m request. helm-controller (~28m) and
+          # source-controller (~5m) are adequately sized and left alone.
+          - patch: |-
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: all
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: manager
+                        resources:
+                          requests:
+                            cpu: 250m
+            target:
+              kind: Deployment
+              name: kustomize-controller
+          # Enable in-memory kustomize builds
+          - patch: |-
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --concurrent=20
+              - op: replace
+                path: /spec/template/spec/volumes/0
+                value:
+                  name: temp
+                  emptyDir:
+                    medium: Memory
+            target:
+              kind: Deployment
+              name: kustomize-controller
+          # Enable Helm repositories caching
+          - patch: |-
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --helm-cache-max-size=10
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --helm-cache-ttl=60m
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --helm-cache-purge-interval=5m
+            target:
+              kind: Deployment
+              name: source-controller
+          # Cache Secrets and ConfigMaps
+          - patch: |-
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --feature-gates=CacheSecretsAndConfigMaps=true
+            target:
+              kind: Deployment
+              name: source-controller
+          # Flux near OOM detection for Helm
+          - patch: |-
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --feature-gates=OOMWatch=true
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --oom-watch-memory-threshold=95
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --oom-watch-interval=500ms
+            target:
+              kind: Deployment
+              name: helm-controller
+          # Disable chart digest tracking
+          - patch: |-
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --feature-gates=DisableChartDigestTracking=true
+            target:
+              kind: Deployment
+              name: helm-controller
+          # Controller-level SOPS decryption
+          - patch: |-
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --sops-age-secret=sops-age
+            target:
+              kind: Deployment
+              name: kustomize-controller
+          # Decrypt SOPS in the sync Kustomization itself.
+          # flux/config applies components/cluster-vars/cluster-secrets.sops.yaml,
+          # and core/ applies the same Secret decrypted. Without this the sync
+          # Kustomization writes raw ENC[...] over it every interval, breaking
+          # any ${SECRET_*} substitution until core/ repairs it.
+          - patch: |-
+              apiVersion: kustomize.toolkit.fluxcd.io/v1
+              kind: Kustomization
+              metadata:
+                name: flux-system
+                namespace: flux-system
+              spec:
+                decryption:
+                  provider: sops
+                  secretRef:
+                    name: sops-age
+            target:
+              group: kustomize.toolkit.fluxcd.io
+              kind: Kustomization
+              name: flux-system
+          # Watch configmaps and secrets attached to HelmReleases and Kustomizations
+          - patch: |-
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --watch-configs-label-selector=owner!=helm
+            target:
+              kind: Deployment
+              name: (helm-controller|kustomize-controller)
+          # Cancel health checks on new Kustomizations revisions
+          - patch: |-
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --feature-gates=CancelHealthCheckOnNewRevision=true
+            target:
+              kind: Deployment
+              name: kustomize-controller

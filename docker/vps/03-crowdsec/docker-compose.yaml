@@ -1,0 +1,74 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# CrowdSec edge IPS — detection engine only. Ported/adapted from eleboucher/homelab
+# docker/vps/09-crowdsec. It parses SSH auth (journald) for brute-force and pulls the
+# CrowdSec community blocklist (CAPI), exposing decisions on a host-local LAPI. The
+# ENFORCER is the nftables firewall-bouncer installed on the VPS host (it manages host
+# netfilter, so it is not a container) — see docker/vps/README.md. LAPI is published on
+# 127.0.0.1 so only the host bouncer can reach it; nothing is public.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  crowdsec:
+    image: docker.io/crowdsecurity/crowdsec:v1.7.8
+    container_name: crowdsec
+    restart: unless-stopped
+    environment:
+      COLLECTIONS: "crowdsecurity/linux crowdsecurity/sshd"
+      PARSERS: "crowdsecurity/geoip-enrich"
+    # The cluster's Loki, reached over the tailnet. Pinned by address rather than
+    # resolved: MagicDNS does not work from inside a container here — tailscaled binds
+    # 100.100.100.100 on the tailscale interface, and queries from a docker bridge do
+    # not route there (`getent hosts loki` returns nothing, even with dns/dns_search set).
+    #
+    # 100.67.197.96 is the tailscale-operator proxy in front of loki-gateway (device
+    # `loki`). Tailscale IPs are stable per device, and the operator persists the device
+    # identity in a Secret, so this survives pod restarts — but it would change if that
+    # proxy were ever deleted and recreated from scratch. Re-check with `tailscale status`.
+    extra_hosts:
+      - "loki:100.67.197.96"
+    # Envoy access logs come from the cluster, not from this host — see
+    # acquis.d/envoy-accesslog.yaml for why there is no local HTTP log to parse.
+    volumes:
+      - /var/log:/var/log:ro
+      - /run/systemd/journal:/run/systemd/journal:ro
+      - crowdsec-db:/var/lib/crowdsec/data
+      - crowdsec-config:/etc/crowdsec
+      - ./acquis.d/sshd-auth-log.yaml:/etc/crowdsec/acquis.d/sshd-auth-log.yaml:ro
+      - ./acquis.d/envoy-accesslog.yaml:/etc/crowdsec/acquis.d/envoy-accesslog.yaml:ro
+      - ./parsers:/etc/crowdsec/parsers/s01-parse/custom:ro
+      - ./scenarios:/etc/crowdsec/scenarios/custom:ro
+      - ./whitelists:/etc/crowdsec/parsers/s02-enrich/custom:ro
+      - ./config/config.yaml.local:/etc/crowdsec/config.yaml.local:ro
+    ports:
+      # LAPI, host-loopback only — the host firewall-bouncer connects here.
+      - "127.0.0.1:8088:8080"
+    expose:
+      # Prometheus metrics, scraped by the observability stack over the edge network.
+      - "6060"
+    healthcheck:
+      test:
+        - "CMD"
+        - "cscli"
+        - "lapi"
+        - "status"
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+    logging: *default-logging
+networks:
+  default:
+    name: edge
+    external: true
+volumes:
+  crowdsec-db:
+  crowdsec-config:

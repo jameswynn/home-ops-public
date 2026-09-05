@@ -1,0 +1,666 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kube-prometheus-stack
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 88.5.0
+  url: oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kube-prometheus-stack
+  namespace: monitoring
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: kube-prometheus-stack
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 5
+  values:
+    crds:
+      enabled: true
+      upgradeJob:
+        enabled: true
+        forceConflicts: true
+
+    alertmanager:
+      alertmanagerSpec:
+        replicas: 3
+        # CPU from 7d of Prometheus data: p50 4.1m, p95 4.6m, max 5.9m across
+        # all 3 replicas — a gossip loop and very few alerts. 25m is the
+        # practical request floor. No CPU limit, per the cluster convention.
+        resources:
+          requests:
+            memory: 100Mi
+            cpu: 25m
+          limits:
+            memory: 200Mi
+        storage:
+          volumeClaimTemplate:
+            spec:
+              storageClassName: local-path
+              resources:
+                requests:
+                  storage: 1Gi
+        podAntiAffinity: "hard"
+        alertmanagerConfiguration:
+          name: alertmanager
+          global:
+            resolveTimeout: 5m
+        externalUrl: https://prom-alert.${SECRET_INTERNAL_DOMAIN}
+
+      route:
+        main:
+          enabled: true
+          annotations:
+            gethomepage.dev/enabled: "true"
+            gethomepage.dev/name: "Alertmanager"
+            gethomepage.dev/description: "Cluster alerts"
+            gethomepage.dev/group: "Operations"
+            gethomepage.dev/icon: "alertmanager.png"
+            gethomepage.dev/weight: "100"
+            gethomepage.dev/pod-selector: "app.kubernetes.io/instance=kube-prometheus-stack-alertmanager  "
+          hostnames:
+            - prom-alert.${SECRET_INTERNAL_DOMAIN}
+          parentRefs:
+            - name: envoy-internal
+              namespace: networking
+
+    prometheus-node-exporter:
+      fullnameOverride: node-exporter
+      tolerations:
+        - key: "arm"
+          value: "true"
+          operator: "Equal"
+          effect: "NoSchedule"
+      # CPU from 7d of Prometheus data: p50 1.8-3.6m, p95 2.2-4.1m, max 6.1m
+      # across the 5 nodes. Despite usage that low, the 1000m limit was still
+      # throttling it — 3.3% and 2.6% of CFS periods on the two busiest nodes —
+      # because a scrape wakes every collector goroutine at once. Removing the
+      # limit is the fix. 25m is the practical request floor. No CPU limit, per
+      # the cluster convention.
+      resources:
+        requests:
+          memory: 100Mi
+          cpu: 25m
+        limits:
+          memory: 200Mi
+      prometheus: &prometheus
+        monitor:
+          enabled: true
+          relabelings:
+            - action: replace
+              regex: (.*)
+              replacement: $1
+              sourceLabels:
+                - __meta_kubernetes_pod_node_name
+              targetLabel: instance
+    grafana:
+      enabled: false
+      forceDeployDashboards: true
+    kubelet:
+      enabled: true
+      serviceMonitor:
+        metricRelabelings:
+          - action: replace
+            sourceLabels:
+              - node
+            targetLabel: instance
+    kubeApiServer:
+      enabled: true
+    kubeControllerManager:
+      enabled: true
+      endpoints: &nodes
+        - 192.168.1.12
+        - 192.168.1.13
+        - 192.168.1.15
+        # service:
+        #   enabled: true
+        #   port: 10257
+        #   targetPort: 10257
+        # serviceMonitor:
+        #   enabled: true
+        #   https: true
+        #   insecureSkipVerify: true
+    kubeScheduler:
+      enabled: true
+      endpoints: *nodes
+      # service:
+      #   enabled: true
+      #   port: 10259
+      #   targetPort: 10259
+      # serviceMonitor:
+      #   enabled: true
+      #   https: true
+      #   insecureSkipVerify: true
+    kubeProxy:
+      enabled: false
+    kubeEtcd:
+      enabled: true
+      endpoints: *nodes
+      # service:
+      #   enabled: true
+      #   port: 2381
+      #   targetPort: 2381
+    kube-state-metrics:
+      fullnameOverride: kube-state-metrics
+      metricLabelsAllowlist:
+        - "persistentvolumeclaims=[*]"
+      prometheus: *prometheus
+      # KSM custom-resource metrics for toolhive's VirtualMCPServer CRD, so the
+      # toolhive PrometheusRule (apps/ai/toolhive/config/prometheusrule.yaml)
+      # can alert on VMCP health. Without this the kube_customresource_* family
+      # never exists and the rule's absent() is permanently true — the
+      # VirtualMCPServerAbsent false positive that fired all day on 2026-08-26.
+      # Must be paired with rbac.extraRules so KSM can list/watch the CRD.
+      rbac:
+        extraRules:
+          - apiGroups:
+              - "toolhive.stacklok.dev"
+            resources:
+              - "virtualmcpservers"
+            verbs:
+              - "list"
+              - "watch"
+      customResourceState:
+        enabled: true
+        config:
+          kind: CustomResourceStateMetrics
+          spec:
+            resources:
+              - groupVersionKind:
+                  group: toolhive.stacklok.dev
+                  kind: VirtualMCPServer
+                  version: v1beta1
+                labelsFromPath:
+                  name:
+                    - metadata
+                    - name
+                  namespace:
+                    - metadata
+                    - namespace
+                metrics:
+                  - name: "status_condition"
+                    help: "VirtualMCPServer status conditions (1 = true, 0 = false)"
+                    each:
+                      type: Gauge
+                      gauge:
+                        path:
+                          - status
+                          - conditions
+                        labelsFromPath:
+                          condition:
+                            - type
+                        valueFrom:
+                          - status
+      # CPU from 7d of Prometheus data: p50 7.4m, p95 8.5m, max 9.9m. Flat —
+      # it rebuilds its object cache on a timer and the cluster's object count
+      # barely moves. 25m is the practical request floor. No CPU limit, per the
+      # cluster convention.
+      resources:
+        requests:
+          memory: 100Mi
+          cpu: 25m
+        limits:
+          memory: 500Mi
+    prometheus:
+      route:
+        main:
+          enabled: true
+          annotations:
+            gethomepage.dev/enabled: "true"
+            gethomepage.dev/name: "Prometheus"
+            gethomepage.dev/description: "Cluster metrics"
+            gethomepage.dev/group: "Operations"
+            gethomepage.dev/icon: "si-prometheus"
+            gethomepage.dev/weight: "90"
+            gethomepage.dev/pod-selector: "app.kubernetes.io/instance=kube-prometheus-stack-prometheus"
+          hostnames:
+            - prom.${SECRET_INTERNAL_DOMAIN}
+          parentRefs:
+            - name: envoy-internal
+              namespace: networking
+
+      # Reachable on the tailnet as prometheus.<tailnet>, so the prometheus-agent on
+      # the heimdall VPS can remote_write host/container metrics in (the receiver is
+      # enabled below). Same tailscale-operator pattern as the Loki gateway.
+      #
+      # ⚠️ This proxies every port on the service and Prometheus has no auth of its
+      # own, so the tailnet is the only boundary — and enableAdminAPI is on below,
+      # which means a tailnet peer can delete series. Scope this to the VPS with a
+      # Tailscale ACL; do not treat tailnet-wide reachability as sufficient.
+      service:
+        annotations:
+          tailscale.com/expose: "true"
+          tailscale.com/hostname: "prometheus"
+
+      prometheusSpec:
+        image:
+          registry: mirror.gcr.io
+          repository: prompp/prompp
+          tag: 2.53.2-0.2.5
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 64535
+          runAsGroup: 64535
+          fsGroup: 64535
+        # replicas: 3
+        scrapeInterval: 1m # Must match interval in Grafana Helm chart ??
+        ruleSelectorNilUsesHelmValues: false
+        serviceMonitorSelectorNilUsesHelmValues: false
+        podMonitorSelectorNilUsesHelmValues: false
+        probeSelectorNilUsesHelmValues: false
+        scrapeConfigSelectorNilUsesHelmValues: false
+        retention: 14d
+        # retentionSize is the binding constraint, not `retention` — whichever
+        # trips first wins. At 15GB the TSDB filled its cap in ~5 days, so the
+        # 14d window was never actually retained; an etcd investigation in Aug
+        # 2026 lost every sample older than that and couldn't establish the
+        # recurrence period of the failures. ~3GB/day × 14d ≈ 42GB, so 50GB
+        # (= 50e9 bytes ≈ 46.6GiB) covers the window with headroom and still
+        # sits well inside the 70Gi volumeClaimTemplate below.
+        retentionSize: 50GB
+        enableAdminAPI: true
+        # Accept remote_write from tempo's metrics-generator (service graphs / span metrics).
+        enableRemoteWriteReceiver: true
+        walCompression: true
+        enableFeatures:
+          - auto-gomemlimit
+          - memory-snapshot-on-shutdown
+          - new-service-discovery-manager
+        storageSpec:
+          volumeClaimTemplate:
+            spec:
+              storageClassName: local-path
+              resources:
+                requests:
+                  storage: 70Gi
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: beta.kubernetes.io/arch
+                    operator: In
+                    values:
+                      - amd64
+        resources:
+          requests:
+            memory: 500Mi
+            # CPU from 7d of Prometheus data: p50 278.8m, p95 324.0m, p99
+            # 606.2m, max 772.9m — scrape and rule-eval cycles on top of a
+            # sustained base. The 300m request was under p95, so the pod was
+            # routinely running on borrowed CPU; 500m covers p95 with headroom.
+            # The 2000m limit was also throttling 1.4% of CFS periods despite
+            # never being reached on average, which is the rule-eval fan-out.
+            # No CPU limit, per the cluster convention.
+            cpu: 500m
+          limits:
+            memory: 2000Mi
+            # additionalScrapeConfigs:
+            #   - job_name: external-minio-job
+            #     bearer_token: "${SECRET_MINIO_PROMETHEUS_KEY}"
+            #     metrics_path: /minio/v2/metrics/cluster
+            #     scheme: http
+            #     static_configs:
+            #       - targets: ['${SECRET_NAS_URL}:9443']
+    additionalPrometheusRulesMap:
+      dockerhub-rules:
+        groups:
+          - name: dockerhub
+            rules:
+              - alert: DockerhubRateLimitRisk
+                annotations:
+                  summary: There are {{ $value }} containers pulling from Dockerhub. This may lead to rate limiting.
+                expr: count(time() - container_last_seen{image=~"(docker.io).*",container!=""} < 30) > 100
+                labels:
+                  severity: critical
+      oom-rules:
+        groups:
+          - name: oom
+            rules:
+              - alert: OomKilled
+                annotations:
+                  summary: Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} has been OOMKilled {{ $value }} times in the last 10 minutes.
+                expr: (kube_pod_container_status_restarts_total - kube_pod_container_status_restarts_total offset 10m >= 1) and ignoring (reason) min_over_time(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[10m]) == 1
+                labels:
+                  severity: critical
+      resource-rules:
+        groups:
+          - name: resources
+            rules:
+              # A container chronically using far more CPU than it asked for.
+              # The scheduler packs nodes by request, so a container that
+              # requests 10m and sustains 1350m is 1340m of unbudgeted CPU on
+              # whatever node it landed on — the node looks empty to the
+              # scheduler while it is actually saturated. Nothing surfaced this
+              # before: it is not a restart, not an OOM, and not a throttle, so
+              # the only symptom is other pods on the same node running slow.
+              # Found by hand in the frigate audit; this is that audit as a rule.
+              #
+              # Joined on (namespace, pod, container) rather than summed per
+              # pod. A pod-level sum would divide real usage by a denominator
+              # missing every container that has no request at all, inflating
+              # the ratio for sidecar-bearing pods. The join also disposes of
+              # the divide-by-zero case for free: a container with no request
+              # has no series on the right and simply drops out, so `> 0` is
+              # only guarding an explicit `cpu: 0`.
+              #
+              # The 50m usage floor is the load-bearing half of this rule. Ratio
+              # alone is meaningless for containers that barely run: the
+              # tailscale operator hardcodes a 1m request on every proxy pod it
+              # generates, and those idle at ~20m — a permanent 20x that no
+              # commit in this repo can fix, because the manifests are the
+              # operator's. Measured over 24h, the floor drops all seven of them
+              # and keeps every genuine finding. It is a noise gate, not a
+              # statement about what counts as important.
+              #
+              # `for: 30m` and not 15m for the same reason, also measured: at
+              # 15m this additionally fires on immich, bazarr, pinchflat and the
+              # forgejo runner, which are CI and import jobs bursting above a
+              # request they sit well under the rest of the day. That is
+              # legitimate bursting — the thing requests-vs-limits exists for —
+              # and not a misprovisioned workload. Lengthening the rate window
+              # instead does not work and makes it worse: averaging a burst over
+              # a longer window holds it above the threshold for longer.
+              - alert: CpuUsageFarExceedsRequest
+                annotations:
+                  summary: Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} is sustaining {{ $value | printf "%.1f" }}x its CPU request.
+                  description: >-
+                    Its CPU request is too low to describe what it actually
+                    does, so the scheduler is packing nodes against a number
+                    that is wrong. Raise the request to roughly observed usage
+                    rather than silencing this — the symptom of leaving it is
+                    unrelated pods on the same node getting starved.
+                expr: |
+                  (
+                    sum by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[15m]))
+                    / on (namespace, pod, container)
+                    sum by (namespace, pod, container) (kube_pod_container_resource_requests{resource="cpu"} > 0)
+                  ) > 5
+                  and
+                  sum by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[15m])) > 0.05
+                for: 30m
+                labels:
+                  severity: warning
+      statefulset-stability-rules:
+        groups:
+          # StatefulSet pods are the ones with identity and state: a recreated
+          # replica loses its ordinal's local disk, rejoins a quorum cold, and
+          # in the dragonfly/garage/clickhouse cases forces a resync. Nothing
+          # upstream alerts on the difference between "we rolled it" and "it
+          # died and came back", which is the distinction that matters, so
+          # every rule here joins pod-level signals to StatefulSet ownership
+          # via kube_pod_owner and treats a metadata-generation bump as the
+          # marker of a deliberate rollout.
+          #
+          # The join is written the same way throughout:
+          #
+          #   max by (namespace, pod, owner_name) (kube_pod_owner{owner_kind="StatefulSet"})
+          #
+          # and not the bare selector. kube-state-metrics keys pod series by
+          # `uid`, so while a pod is being replaced both the dying and the new
+          # uid are exported under the same (namespace, pod). Matching against
+          # the raw metric would hit "found duplicate series for the match
+          # group" during precisely the event these rules exist to catch;
+          # collapsing uid first makes the right-hand side one series per pod.
+          - name: statefulset-stability
+            rules:
+              # A StatefulSet pod whose start time moved without its owner's
+              # spec changing — the pod object was replaced by something other
+              # than a rollout: an eviction, a node drain, a preemption, an
+              # OOM that took the whole sandbox, a kubelet losing the pod.
+              #
+              # `changes()` cannot be applied to kube_pod_start_time directly.
+              # A recreated pod gets a new uid, so it arrives as a *new series*
+              # rather than as a changed value on the old one, and changes()
+              # over a series that only just appeared is 0. The subquery over
+              # `max by (namespace, pod, ...)` is what makes the event visible:
+              # uid is collapsed, the ordinal's name is stable, and the new
+              # pod's (larger) start time replaces the old one's — one change.
+              # Resolution is 1m to match `scrapeInterval` above.
+              #
+              # The `unless` is the rollout exclusion. On a deliberate change
+              # Flux bumps the StatefulSet spec, kube_statefulset_metadata_generation
+              # moves, and every pod recreation in the window is explained by
+              # it. kube-state-metrics labels that metric `statefulset`, so it
+              # is relabelled to `owner_name` to match the pod side. Measured
+              # against the last 24h of live data this suppressed exactly the
+              # garage-cluster rollout and nothing else.
+              - alert: StatefulSetPodRecreatedWithoutRollout
+                annotations:
+                  summary: >-
+                    StatefulSet pod {{ $labels.namespace }}/{{ $labels.pod }} was recreated {{ $value }} time(s) in the last hour with no rollout of {{ $labels.owner_name }}.
+                  description: >-
+                    The pod object was replaced without its StatefulSet spec
+                    changing, so this was not a deploy — something killed the
+                    pod and the controller rebuilt it. Check the previous pod's
+                    termination reason and the node it was on; evictions,
+                    OOMs and node pressure all land here. Stateful replicas pay
+                    for this in cold caches and resyncs, so a recurring one is
+                    worth chasing even when the workload looks healthy after.
+                  runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#statefulsetpodrecreatedwithoutrollout
+                expr: |
+                  (
+                    changes(
+                      max by (namespace, pod, owner_name) (
+                        kube_pod_start_time
+                        * on (namespace, pod) group_left (owner_name)
+                          max by (namespace, pod, owner_name) (kube_pod_owner{owner_kind="StatefulSet"})
+                      )[1h:1m]
+                    ) > 0
+                  )
+                  unless on (namespace, owner_name)
+                  label_replace(
+                    changes(max by (namespace, statefulset) (kube_statefulset_metadata_generation)[1h:1m]) > 0,
+                    "owner_name", "$1", "statefulset", "(.+)"
+                  )
+                for: 10m
+                labels:
+                  severity: warning
+
+              # In-place container restarts: the pod survived, the container
+              # did not. Distinct from the rule above — the sandbox, the PVC
+              # mount and the ordinal all stayed, so this never shows up as a
+              # start-time change and never shows up as a rollout either.
+              #
+              # sum(increase(...)) and not increase(sum(...)): the counter
+              # resets to 0 for a new uid, and summing per-series increases is
+              # what makes the reset a non-event instead of a negative spike.
+              # `> 2` is deliberately above the single-restart case — one
+              # restart an hour is a bad container, three is a crash loop that
+              # the backoff is losing to.
+              - alert: StatefulSetContainerRestarting
+                annotations:
+                  summary: >-
+                    Container {{ $labels.container }} in StatefulSet pod {{ $labels.namespace }}/{{ $labels.pod }} restarted {{ $value | printf "%.0f" }} times in the last hour.
+                  description: >-
+                    The pod itself is intact, so this is the container process
+                    dying and being restarted in place. Look at the previous
+                    container's logs and exit code rather than at the pod
+                    events, which will show nothing. If the exit is OOMKilled
+                    the OomKilled alert covers the cause; otherwise this is the
+                    only signal, since a restarting-but-eventually-ready pod
+                    keeps the StatefulSet reporting fully available.
+                  runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#statefulsetcontainerrestarting
+                expr: |
+                  (
+                    sum by (namespace, pod, container) (
+                      increase(kube_pod_container_status_restarts_total[1h])
+                    ) > 2
+                  )
+                  * on (namespace, pod) group_left (owner_name)
+                    max by (namespace, pod, owner_name) (kube_pod_owner{owner_kind="StatefulSet"})
+                for: 10m
+                labels:
+                  severity: warning
+
+              # The inverse of the first rule: the StatefulSet spec itself is
+              # being rewritten over and over. Three generations in a day is
+              # not a deploy cadence in a GitOps repo where the desired state
+              # only changes on commit — it is a HelmRelease fighting a
+              # mutating admission webhook, an operator rewriting a field it
+              # also reads, or a failed upgrade being remediated on a loop.
+              # Every bump rolls the pods, so this is upstream of the churn the
+              # other rules see.
+              #
+              # Subquery rather than changes(kube_statefulset_metadata_generation[24h])
+              # so a kube-state-metrics restart, which changes the series'
+              # `pod` label and would otherwise reset the count to 0, does not
+              # blind the rule.
+              - alert: StatefulSetRevisionChurn
+                annotations:
+                  summary: >-
+                    StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} changed generation {{ $value | printf "%.0f" }} times in the last 24h.
+                  description: >-
+                    Its spec is being rewritten far more often than commits to
+                    this repo can explain, and each rewrite rolls every replica.
+                    Compare the rendered manifest against the live object
+                    (`flux diff ks`) to find the field that will not settle —
+                    usually something an operator or webhook defaults
+                    differently from what the chart sends.
+                  runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#statefulsetrevisionchurn
+                expr: |
+                  changes(
+                    max by (namespace, statefulset) (kube_statefulset_metadata_generation)[24h:1m]
+                  ) > 2
+                for: 15m
+                labels:
+                  severity: warning
+
+              # Readiness flapping without a restart or a recreation: the
+              # container stays up, the probe keeps failing and recovering.
+              # Each transition pulls the pod out of its Service endpoints, so
+              # for a quorum member this is intermittent unavailability that
+              # leaves no trace in the restart count, the start time, or the
+              # StatefulSet's own status.
+              #
+              # `> 4` is two full out-and-back cycles in an hour, which is past
+              # anything a single slow start or one-off blip produces. Sampled
+              # at 1m, so a sub-minute blip is deliberately invisible — this
+              # rule is for sustained flapping, not for probe jitter.
+              - alert: StatefulSetReadinessFlapping
+                annotations:
+                  summary: >-
+                    StatefulSet pod {{ $labels.namespace }}/{{ $labels.pod }} changed ready state {{ $value | printf "%.0f" }} times in the last hour.
+                  description: >-
+                    The pod is neither restarting nor being recreated, so its
+                    readiness probe is failing and recovering under a container
+                    that never dies. Every flap removes it from the Service
+                    endpoints. Check the probe's timeout against what the
+                    process actually does under load before loosening it — for
+                    a replicated StatefulSet this is usually a member that is
+                    busy syncing, not a probe that is wrong.
+                  runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#statefulsetreadinessflapping
+                expr: |
+                  changes(
+                    max by (namespace, pod, owner_name) (
+                      kube_pod_status_ready{condition="true"}
+                      * on (namespace, pod) group_left (owner_name)
+                        max by (namespace, pod, owner_name) (kube_pod_owner{owner_kind="StatefulSet"})
+                    )[1h:1m]
+                  ) > 4
+                for: 10m
+                labels:
+                  severity: warning
+
+          - name: node-eviction
+            rules:
+              # The kubelet killed a pod for exceeding its own
+              # ephemeral-storage limit (`ephemeralpodfs.limit`, i.e. the
+              # container's writable layer and emptyDirs, not the node filling
+              # up). This is the failure mode the 64Mi/32Mi default raise was
+              # aimed at, and it is otherwise silent: the pod is gone, the
+              # controller rebuilds it, and nothing in the workload's own
+              # metrics says why.
+              #
+              # Two things about this metric on k3s. It is exported by the
+              # kubelet, but k3s serves the apiserver, controller-manager and
+              # scheduler metrics from the same process, so kubelet_evictions
+              # also appears under the `apiserver`, `kube-controller-manager`
+              # and `kube-scheduler` jobs — four copies of every count, three
+              # of them without a `node` label. Hence both the job filter and
+              # the sum by (node): the filter drops the impostors, the
+              # aggregation collapses anything left (the kubelet ServiceMonitor
+              # scrapes /metrics, /metrics/cadvisor and /metrics/probes) into
+              # one series per node. Verified against live data: 13 raw series,
+              # 4 after aggregation, one per node that has ever evicted.
+              - alert: PodEphemeralStorageEviction
+                annotations:
+                  summary: >-
+                    Node {{ $labels.node }} evicted {{ $value | printf "%.0f" }} pod(s) for exceeding their ephemeral-storage limit in the last hour.
+                  description: >-
+                    A pod wrote more to its writable layer or an emptyDir than
+                    its ephemeral-storage limit allowed and the kubelet killed
+                    it. The evicted pod is the one to size, not the node — find
+                    it with `kubectl get events --field-selector reason=Evicted`
+                    on this node while the event is still in the window, then
+                    raise that workload's ephemeral-storage limit or give it a
+                    volume for whatever it is spilling.
+                  runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#podephemeralstorageeviction
+                expr: |
+                  sum by (node) (
+                    increase(kubelet_evictions{job="kubelet", eviction_signal="ephemeralpodfs.limit"}[1h])
+                  ) > 0
+                for: 5m
+                labels:
+                  severity: critical
+
+          - name: prometheus-retention
+            rules:
+              # `retentionSize: 50GB` is the binding constraint on the TSDB,
+              # not `retention: 14d` — whichever trips first wins, and at the
+              # old 15GB cap the window silently collapsed to ~5 days, which is
+              # how an etcd investigation lost every sample it needed. This
+              # rule watches the outcome rather than the setting: how much
+              # history is actually on disk right now.
+              #
+              # The size-retention guard is what makes it honest. A TSDB that
+              # is merely still filling toward its cap after a wipe has a short
+              # window without anything being wrong, and would otherwise alert
+              # for its first 13 days. increase(prometheus_tsdb_size_retentions_total[24h]) > 0
+              # means blocks are being deleted for size *now*, so a short
+              # window is a real ceiling and not a young database.
+              #
+              # Joined on (namespace, pod), not (job, instance): `instance` is
+              # the pod IP, which changes on every restart, so an instance join
+              # silently matches nothing across the restart that most often
+              # precedes someone asking where the data went.
+              - alert: PrometheusRetentionBelowTarget
+                annotations:
+                  summary: >-
+                    Prometheus {{ $labels.namespace }}/{{ $labels.pod }} is retaining only {{ $value | printf "%.1f" }} days of samples.
+                  description: >-
+                    retentionSize is trimming blocks before the 14d retention
+                    window is reached, so the effective history is shorter than
+                    the 13d target and any investigation that reaches back
+                    further will find nothing. Either ingestion has grown or
+                    the cap is too low — compare prometheus_tsdb_storage_blocks_bytes
+                    against retentionSize and raise the cap (and the 70Gi
+                    volumeClaimTemplate with it) rather than shortening the
+                    target.
+                  runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#prometheusretentionbelowtarget
+                expr: |
+                  (
+                    (time() - min by (namespace, pod) (prometheus_tsdb_lowest_timestamp_seconds > 0)) / 86400 < 13
+                  )
+                  and on (namespace, pod)
+                  (
+                    sum by (namespace, pod) (increase(prometheus_tsdb_size_retentions_total[24h])) > 0
+                  )
+                for: 1h
+                labels:
+                  severity: warning

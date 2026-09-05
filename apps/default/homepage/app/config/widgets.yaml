@@ -1,0 +1,27 @@
+---
+# For configuration options and examples, please see:
+# https://github.com/benphelps/homepage/wiki/Information-Widgets
+
+- kubernetes:
+    cluster:
+      show: true
+      cpu: true
+      memory: true
+      showLabel: true
+      label: "cluster"
+    nodes:
+      show: true
+      cpu: true
+      memory: true
+      showLabel: true
+
+- longhorn:
+    expanded: true
+    total: true
+
+- search:
+    provider: custom
+    url: https://kagi.com/search?q=
+    target: _blank
+    suggestionUrl: https://kagi.com/api/autosuggest?q=
+    showSearchSuggestions: true

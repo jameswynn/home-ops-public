@@ -1,0 +1,96 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/renovate-operator.mogenius.com/renovatejob_v1alpha1.json
+apiVersion: renovate-operator.mogenius.com/v1alpha1
+kind: RenovateJob
+metadata:
+  name: renovate-forgejo
+spec:
+  discoveryFilters:
+    - james/*
+  extraEnv:
+    # debug emits occasional single log lines over 360KB (full dependency and
+    # config dumps), which exceed Loki's 256KB max_line_size. Set back to debug
+    # temporarily when actually troubleshooting Renovate itself.
+    - name: LOG_LEVEL
+      value: info
+    - name: RENOVATE_GIT_AUTHOR
+      value: "Renovate <renovate@${SECRET_ROOT_DOMAIN}>"
+    - name: RENOVATE_ONBOARDING_CONFIG
+      value: |
+        {
+          "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+          "extends": [
+            'config:recommended'
+          ]
+        }
+    - name: RENOVATE_ALLOW_PLUGINS
+      value: "true"
+    # Let a release sit for 3 days before we'll raise a PR for it, so freshly
+    # published (and quickly yanked) versions never reach the cluster. Global
+    # default for every discovered repo; a repo can override in its own config.
+    - name: RENOVATE_MINIMUM_RELEASE_AGE
+      value: "3 days"
+    - name: RENOVATE_BRANCH_PREFIX
+      value: renovate-
+    - name: RENOVATE_REPOSITORY_CACHE
+      value: "enabled"
+    # Repository cache (per-repo extraction results) lives in the Garage NAS
+    # bucket instead of the RWO PVC, so the 5 parallel job pods no longer
+    # contend on one node-local volume for it. The package/lookup cache stays
+    # in Dragonfly — S3 backs the repository cache only.
+    - name: RENOVATE_REPOSITORY_CACHE_TYPE
+      value: "s3://renovate-cache/forgejo/"
+    - name: RENOVATE_S3_ENDPOINT
+      value: "https://${SECRET_GARAGE_URL}"
+    # Garage only serves path-style addressing.
+    - name: RENOVATE_S3_PATH_STYLE
+      value: "true"
+    - name: AWS_REGION
+      value: garage
+    # Minted by the garage-operator from the renovate-cache GarageKey; the
+    # Secret name matches the GarageKey and uses the operator's default key
+    # names. The AWS SDK picks these up via its default credential chain.
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: renovate-cache
+          key: access-key-id
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: renovate-cache
+          key: secret-access-key
+    - name: RENOVATE_REDIS_URL
+      value: redis://renovate-jobs-dragonfly:6379
+    - name: DOCKERHUB_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: renovate-secret
+          key: DOCKERHUB_USERNAME
+    - name: DOCKERHUB_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: renovate-secret
+          key: DOCKERHUB_TOKEN
+  image: ghcr.io/renovatebot/renovate:44.35.0
+  parallelism: 5
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: 1Gi
+    limits:
+      # Some repos (ghostrecon) make Renovate install a full Rust toolchain
+      # (~1.5 GiB) into the container writable layer, which evicted the job
+      # ~46s in against the previous 1Gi cap.
+      ephemeral-storage: 4Gi
+  # Once a day at 06:00 local. The operator schedules in UTC, so the timezone
+  # has to ride along in the spec: its cron library (netresearch/go-cron)
+  # honours a CRON_TZ= prefix, which also keeps 06:00 correct across DST.
+  schedule: "CRON_TZ=${CLUSTER_TZ} 0 6 * * *"
+  secretRef: renovate-secret
+  provider:
+    name: forgejo
+    endpoint: https://forge.${SECRET_ROOT_DOMAIN}/api/v1
+  webhook:
+    enabled: true

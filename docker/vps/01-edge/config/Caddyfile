@@ -1,0 +1,73 @@
+{
+    email {$CADDY_ACME_EMAIL}
+    http_port 8080
+    https_port 8443
+
+    layer4 {
+        :443 {
+            matching_timeout 15s
+            # Hosts Caddy terminates TLS for itself → its internal HTTPS server on :8443.
+            @local tls sni {$VPS_LOCAL_HOSTS}
+            route @local {
+                proxy {
+                    proxy_protocol v2
+                    upstream 127.0.0.1:8443
+                }
+            }
+            # Everything else (tunnelled app hostnames, e.g. echo.wynning.tech) → towonel hub.
+            @tls tls
+            route @tls {
+                proxy {
+                    proxy_protocol v2
+                    upstream towonel-hub:4443
+                }
+            }
+        }
+        :80 {
+            @local_http http host {$VPS_LOCAL_HOSTS}
+            route @local_http {
+                proxy {
+                    proxy_protocol v2
+                    upstream 127.0.0.1:8080
+                }
+            }
+            @http http
+            route @http {
+                proxy {
+                    proxy_protocol v2
+                    upstream towonel-hub:4480
+                }
+            }
+        }
+    }
+
+    servers :8443 {
+        listener_wrappers {
+            proxy_protocol {
+                timeout 2s
+                allow 127.0.0.1/32
+            }
+            tls
+        }
+    }
+    servers :8080 {
+        listener_wrappers {
+            proxy_protocol {
+                timeout 2s
+                allow 127.0.0.1/32
+            }
+        }
+    }
+
+    log default {
+        output stdout
+        format json
+    }
+}
+
+# The towonel hub's own public endpoint — Caddy terminates TLS (ACME) and reverse-proxies
+# to the hub's HTTP API. Tunnelled app hostnames bypass this via the L4 default route above.
+towonel.wynning.tech {
+    log
+    reverse_proxy towonel-hub:8443
+}

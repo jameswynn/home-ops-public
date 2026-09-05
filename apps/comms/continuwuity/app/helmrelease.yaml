@@ -1,0 +1,227 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app continuwuity
+spec:
+  interval: 30m
+  releaseName: continuwuity
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 2
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      # Conduwuit's federation traffic is DNS-heavy (SRV lookups plus many
+      # remote subdomains). With the default ndots:5 every external name is
+      # tried against all three cluster search domains before the real query.
+      # ndots:1 skips that chain. Adopted from fhoekstra/home-ops' unbound
+      # commit without the sidecar — dnsPolicy stays ClusterFirst so
+      # split-horizon resolution of matrix.${SECRET_ROOT_DOMAIN} keeps working.
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+    controllers:
+      continuwuity:
+        type: statefulset
+        annotations:
+          reloader.stakater.com/auto: "true"
+
+        # initContainers:
+        #   init-db:
+        #     image:
+        #       repository: ghcr.io/home-operations/postgres-init
+        #       tag: 17.5
+        #       pullPolicy: IfNotPresent
+        #     envFrom:
+        #       - secretRef:
+        #           name: *app
+
+        containers:
+          app:
+            image:
+              repository: forgejo.ellis.link/continuwuation/continuwuity
+              tag: v26.7.3-maxperf@sha256:6a172ad87084d3ae7fd1b84f0fd00b78aa43bb671807dbddb7f33fdfa6b630e2
+            env:
+              - name: CONDUWUIT_SERVER_NAME
+                value: "${SECRET_ROOT_DOMAIN}"
+              - name: TOKIO_WORKER_THREADS
+                value: "5"
+              - name: CONDUWUIT_ROCKSDB_PARALLELISM_THREADS
+                value: "4"
+              - name: CONDUWUIT_DATABASE_PATH
+                value: "/data/db"
+              - name: CONDUWUIT_ADDRESS
+                value: "::"
+              - name: CONDUWUIT_PORT
+                value: "8080"
+              # continuwuity reads its log filter from CONDUWUIT_LOG, not RUST_LOG --
+              # RUST_LOG was silently ignored, so debug logging was never actually on.
+              - name: CONDUWUIT_LOG
+                value: "debug"
+              - name: CONDUWUIT_ALLOW_FEDERATION
+                value: "true"
+              - name: CONDUWUIT_ALLOW_REGISTRATION
+                value: "true"
+              - name: CONDUWUIT_ALLOW_LEGACY_MEDIA
+                value: "true"
+              - name: CONDUWUIT_WELL_KNOWN__CLIENT
+                value: "https://matrix.${SECRET_ROOT_DOMAIN}"
+              - name: CONDUWUIT_WELL_KNOWN__SERVER
+                value: "matrix.${SECRET_ROOT_DOMAIN}:443"
+              - name: CONDUWUIT_MAX_REQUEST_SIZE
+                value: "104857600"
+              - name: CONDUWUIT_IP_LOOKUP_STRATEGY
+                value: "5"
+                # Uncomment this to repair bad db
+                # - name: CONDUWUIT_ROCKSDB_REPAIR
+                #   value: "true"
+            envFrom:
+              - secretRef:
+                  name: continuwuity
+            # CPU sized from 7d of Prometheus data: p50 2.5m, p95 5.9m,
+            # p99 13.2m, max 31m. A 100m request is ~3x headroom over the
+            # observed max and matches the community median for this chart.
+            #
+            # The 2000m limit is a deliberate exception to the cluster-wide
+            # no-CPU-limits convention. The namespace LimitRange used to inject
+            # `default.cpu: 100m` into every container without an explicit
+            # limit, which made this the joint-most-throttled workload in the
+            # cluster: 26.7% of CFS periods throttled at p95 and 66.7% at peak,
+            # despite p95 usage under 6m. Matrix federation is bursty at 100ms
+            # CFS granularity, so a low ceiling throttles the bursts that a 5m
+            # rate average hides. The LimitRange is gone now, so this 2000m is
+            # an explicit, self-documenting choice rather than a silent default.
+            #
+            # Memory limit is 2Gi (community median), not 1Gi: the pod sizes a
+            # ~720MB RocksDB cache budget off the core count it sees via
+            # sched_getaffinity, which reports host cores and ignores the CFS
+            # quota — so the budget is computed as if this owned the whole node.
+            # The observed working set is far below that today (p95 231Mi, max
+            # 247Mi, zero OOMKills), so this is headroom for that budget to
+            # actually be usable, not a reaction to memory pressure.
+            #
+            # No CPU limit. The 2000m ceiling that existed in an earlier draft
+            # of this change was only there to override the namespace
+            # LimitRange's injected 100m default; that LimitRange is deleted by
+            # this very PR, so the limit has no job left.
+            resources:
+              requests:
+                cpu: 100m
+                memory: 512Mi
+              limits:
+                memory: 2Gi
+            probes:
+              liveness: &probes
+                enabled: false
+                custom: true
+                spec:
+                  httpGet:
+                    path: /_matrix/federation/v1/version
+                    port: http
+                  initialDelaySeconds: 0
+                  periodSeconds: 10
+                  timeoutSeconds: 1
+                  failureThreshold: 3
+              readiness: *probes
+
+    service:
+      main:
+        controller: continuwuity
+        ports:
+          http:
+            port: &port 80
+            protocol: TCP
+            targetPort: 8080
+
+    route:
+      app:
+        annotations:
+          external-dns.alpha.kubernetes.io/hostname: "matrix.${SECRET_ROOT_DOMAIN}"
+        hostnames:
+          - "matrix.${SECRET_ROOT_DOMAIN}"
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+          - name: envoy-internal
+            namespace: networking
+      well-known:
+        annotations:
+          # The rule's PathPrefix is /.well-known/matrix, which the sidecar probes
+          # verbatim — but only the /server and /client leaves have handlers, so the
+          # bare prefix 404s. Probe the server-delegation doc, which is the part
+          # federation actually depends on.
+          gatus.home-operations.com/endpoint: |-
+            url: https://${SECRET_ROOT_DOMAIN}/.well-known/matrix/server
+            conditions: ["[STATUS] == 200"]
+        hostnames:
+          - "${SECRET_ROOT_DOMAIN}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /.well-known/matrix
+            # Continuwuity serves the delegation docs with no Cache-Control, so peers
+            # fall back to their own default (the spec's suggested 24h) — or, for
+            # implementations that treat a missing header as "don't cache", refetch on
+            # every federation attempt. Setting it explicitly makes the 24h the spec
+            # recommends deterministic and lets intermediaries cache it too. Both
+            # /server and /client are public, unauthenticated static JSON.
+            filters:
+              - type: ResponseHeaderModifier
+                responseHeaderModifier:
+                  set:
+                    - name: Cache-Control
+                      value: "public, max-age=86400"
+            backendRefs:
+              - identifier: main
+                port: *port
+          # Federation on the apex. Peers that still resolve the (deprecated)
+          # _matrix._tcp SRV record connect to matrix.${SECRET_ROOT_DOMAIN}:443 but
+          # send Host: ${SECRET_ROOT_DOMAIN} — with no /_matrix route on the apex those
+          # requests fell through to garage-web's PathPrefix / catch-all and got 404s,
+          # breaking federation in both directions. Gateway API is longest-prefix-wins,
+          # so these two prefixes take precedence over garage-web's / without touching
+          # Garage. Deliberately scoped to federation + key only — the client API
+          # (/_matrix/client) stays off the apex and remains on matrix.${SECRET_ROOT_DOMAIN}.
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /_matrix/federation
+              - path:
+                  type: PathPrefix
+                  value: /_matrix/key
+            backendRefs:
+              - identifier: main
+                port: *port
+
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+          - name: envoy-internal
+            namespace: networking
+
+    persistence:
+      data:
+        existingClaim: continuwuity
+        advancedMounts:
+          continuwuity:
+            app:
+              - path: /data

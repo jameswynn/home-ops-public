@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &name simple-todo
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  interval: 1h
+  values:
+    controllers:
+      simple-todo:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        containers:
+          app:
+            image:
+              repository: forge.wynning.tech/james/simple-todo # {"$imagepolicy": "simple-todo:simple-todo:name"}
+              tag: v0.0.6 # {"$imagepolicy": "simple-todo:simple-todo:tag"}
+            env:
+              DATA_DIR: /data/todo
+              TS_DIR: /data/tsnet
+              TS_HOSTNAME: simple-todo
+            # envFrom:
+            #   - secretRef:
+            #       name: *name
+            probes:
+              liveness: &probes
+                enabled: false
+              readiness: *probes
+            resources:
+              requests:
+                cpu: 10m
+              limits:
+                memory: 512Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: {drop: ["ALL"]}
+    defaultPodOptions:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+    service:
+      app:
+        ports:
+          http:
+            port: 443
+    persistence:
+      data:
+        existingClaim: *name

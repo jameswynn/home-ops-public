@@ -1,0 +1,20 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-lb
+  namespace: default
+  annotations:
+    internal.wynning.tech/hostname: "postgres.${SECRET_INTERNAL_DOMAIN}"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  loadBalancerIP: ${SVC_POSTGRESQL_ADDR}
+  ports:
+    - name: postgres
+      port: 5432
+      protocol: TCP
+      targetPort: 5432
+  selector:
+    cnpg.io/cluster: postgres
+    cnpg.io/instanceRole: primary

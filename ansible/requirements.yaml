@@ -1,0 +1,23 @@
+---
+collections:
+  - name: ansible.posix
+    version: 2.2.2
+  - name: community.general
+    version: 13.3.0
+  - name: kubernetes.core
+    version: 6.5.0
+  - name: community.sops
+    version: 2.4.0
+  - name: ansible.utils
+    version: 6.1.0
+  # - name: ansible.core
+  #   version: 2.16
+roles:
+  - src: geerlingguy.docker
+    version: 8.0.0
+  - src: xanmanning.k3s
+    version: v3.6.4
+  - src: hifis.unattended_upgrades
+    version: v3.2.1
+  - src: arillso.hosts
+    version: 2.1.0

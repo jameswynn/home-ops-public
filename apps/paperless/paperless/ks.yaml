@@ -1,0 +1,25 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app paperless
+  namespace: &namespace paperless
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/paperless/paperless/app
+  components:
+    - ../../../../components/dragonfly
+    - ../../../../components/forward-auth
+  postBuild:
+    substitute:
+      APP: *app
+      AUTH_ROUTE: *app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system

@@ -1,0 +1,116 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app collabora
+  namespace: office
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  install:
+    createNamespace: true
+    remediation:
+      retries: 5
+  upgrade:
+    remediation:
+      retries: 5
+  values:
+    # collabora:
+    #   domain: cloud\\.${SECRET_ROOT_DOMAIN_ESCAPED_REGEX_STUB}
+    #   server_name: office\.${SECRET_ROOT_DOMAIN_REGEX_STUB}
+    #   username: ${SECRET_COLLABORA_USERNAME}
+    #   password: ${SECRET_COLLABORA_PASSWORD}
+    #   dictionary: en_US
+
+    controllers:
+      main:
+        pod:
+          nodeSelector:
+            kubernetes.io/arch: "amd64"
+        containers:
+          main:
+            image:
+              repository: mirror.gcr.io/collabora/code
+              tag: 26.04.3.1.1
+
+            env:
+              extra_params: --o:ssl.termination=true --o:ssl.enable=false --o:logging.level=warning
+              aliasgroup1: https://cloud.${SECRET_ROOT_DOMAIN}:443,cloud\\.${SECRET_ROOT_DOMAIN_ESCAPED_REGEX_STUB}:443
+              # domain: cloud\\.${SECRET_ROOT_DOMAIN_ESCAPED_REGEX_STUB}
+              dictionaries: en_US
+              # server_name: office\.${SECRET_ROOT_DOMAIN_REGEX_STUB}
+              # dictionaries: en_US
+              username:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: COLLABORA_ADMIN_USERNAME
+              password:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: COLLABORA_ADMIN_PASSWORD
+
+            # securityContext:
+            #   runAsUser: 1000
+            #   runAsGroup: 1000
+            #   fsGroup: 1000
+            #   fsGroupChangePolicy: 'OnRootMismatch'
+
+            # CPU from 7d of Prometheus data: p50 1m, p95 2m, max 22m (measured
+            # per pod — this deployment stayed at 1 replica all week). 25m is
+            # the practical request floor. Note the HPA below scales on CPU
+            # utilization, which is relative to this request: 25m makes it a
+            # 12.5m/pod scale-out threshold. No CPU limit, per the cluster
+            # convention — document conversion should be allowed to burst.
+            resources:
+              requests:
+                memory: 500Mi
+                cpu: 25m
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 1000Mi
+                ephemeral-storage: 1000Mi
+
+    rawResources:
+      autoscaling:
+        enabled: true
+        apiVersion: autoscaling/v2
+        kind: HorizontalPodAutoscaler
+        spec:
+          spec:
+            scaleTargetRef:
+              apiVersion: apps/v1
+              kind: Deployment
+              name: collabora
+            minReplicas: 1
+            maxReplicas: 3
+            metrics:
+              - type: Resource
+                resource:
+                  name: cpu
+                  target:
+                    type: Utilization
+                    averageUtilization: 50
+
+    route:
+      app:
+        annotations:
+          external-dns.alpha.kubernetes.io/hostname: "office.${SECRET_ROOT_DOMAIN}"
+        hostnames:
+          - "office.${SECRET_ROOT_DOMAIN}"
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+          - name: envoy-internal
+            namespace: networking
+
+    service:
+      main:
+        controller: main
+        ports:
+          http:
+            port: 9980

@@ -1,0 +1,150 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app mautrix-meta
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 2
+  install:
+    remediation:
+      retries: -1
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    controllers:
+      mautrix-meta:
+        type: statefulset
+
+        annotations:
+          reloader.stakater.com/auto: "true"
+
+        initContainers:
+          init-db:
+            image:
+              repository: ghcr.io/home-operations/postgres-init
+              tag: 18.6
+              pullPolicy: IfNotPresent
+            envFrom:
+              - secretRef:
+                  name: *app
+
+          busybox:
+            image:
+              repository: mirror.gcr.io/busybox
+              tag: latest
+            command:
+              - /bin/sh
+              - -c
+              - --
+            args:
+              - "cp -n /data/config-in.yaml /data/config.yaml"
+
+        containers:
+          main:
+            image:
+              repository: dock.mau.dev/mautrix/meta
+              tag: v26.07
+
+            env:
+              TZ: "${CLUSTER_TZ}"
+
+            command:
+              - "mautrix-meta"
+            # command:
+            #   - /bin/sh
+            #   - -c
+            #   - --
+            # args:
+            #   - "while true; do sleep 30; done;"
+
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: {drop: ["ALL"]}
+
+            probes:
+              liveness: &probes
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /_matrix/mau/live
+                    port: &port 29319
+                  initialDelaySeconds: 0
+                  periodSeconds: 10
+                  timeoutSeconds: 1
+                  failureThreshold: 5
+              readiness: *probes
+              startup: *probes
+
+            # Sized from 7d of Prometheus data: CPU p50 0.4m, p95 0.5m,
+            # max 3.5m; memory p95 39Mi, max 44Mi. 25m is the bottom of the
+            # cluster CPU request ladder; the memory request comes down from
+            # 128Mi to 96Mi (~2x the observed max) so the scheduler is not
+            # holding back memory this bridge has never used. No CPU limit,
+            # per the convention.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 96Mi
+              limits:
+                memory: 512Mi
+
+    defaultPodOptions:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups:
+          - 10000
+
+    service:
+      main:
+        controller: *app
+        publishNotReadyAddresses: true
+        ports:
+          http:
+            port: *port
+
+    route:
+      main:
+        annotations:
+          gatus.home-operations.com/enabled: "false"
+          external-dns.alpha.kubernetes.io/hostname: "{{ .Release.Name }}.${SECRET_ROOT_DOMAIN}"
+        hostnames:
+          - "{{ .Release.Name }}.${SECRET_ROOT_DOMAIN}"
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+          - name: envoy-internal
+            namespace: networking
+
+    persistence:
+      data:
+        existingClaim: *app
+        globalMounts:
+          - path: /data
+      config:
+        type: secret
+        name: mautrix-meta-files
+        globalMounts:
+          - subPath: registration.yaml
+            path: /data/registration.yaml
+          - subPath: config.yaml
+            path: /data/config-in.yaml
+      tmp:
+        type: emptyDir
+        sizeLimit: 100Mi
+        globalMounts:
+          - path: /tmp

@@ -1,0 +1,87 @@
+---
+model_list:
+  - model_name: gpt-5.6-luna
+    model_info:
+      mode: response
+    litellm_params:
+      model: chatgpt/gpt-5.6-luna
+      supports_system_message: false
+      drop_params: true
+  - model_name: gpt-5.6-terra
+    model_info:
+      mode: response
+    litellm_params:
+      model: chatgpt/gpt-5.6-terra
+      supports_system_message: false
+      drop_params: true
+  - model_name: gpt-5.6-sol
+    model_info:
+      mode: response
+    litellm_params:
+      model: chatgpt/gpt-5.6-sol
+      supports_system_message: false
+      drop_params: true
+
+#  - model_name: sindri/qwen3.6-35b-4bit
+#    model_info:
+#      # mode: chat
+#      max_input_tokens: 24576
+#      max_output_tokens: 8192
+#      supports_function_calling: true
+#      supports_vision: true
+#    litellm_params:
+#      model: qwen3.6-35b-4bit
+#      api_base: http://sindri.dyn.wynning.tech:8000/v1
+#      api_key: rapidmlx
+#      drop_params: true
+#  - model_name: cluster/qwen2.5vl:3b
+#    model_info:
+#      # mode: chat
+#      max_input_tokens: 24576
+#      max_output_tokens: 8192
+#      supports_function_calling: true
+#      supports_vision: true
+#    litellm_params:
+#      model: qwen2.5vl:3b
+#      api_base: http://ollama.llm:8080/v1
+#      api_key: ollama
+#      drop_params: true
+
+# Anthropic via OAuth bearer token (api.anthropic.com).
+# OAuth tokens auth with `Authorization: Bearer` + the oauth beta header and
+# must NOT send `x-api-key` — litellm normally forces x-api-key from api_key,
+# so we set a placeholder api_key and blank x-api-key in extra_headers.
+# # - model_name: claude/sonnet
+# #   model_info:
+# #     mode: chat
+# #   litellm_params:
+# #     model: anthropic/claude-sonnet-4-6
+# #     api_key: "unused" # placeholder to satisfy litellm; suppressed below
+# #     extra_headers:
+# #       Authorization: "os.environ/ANTHROPIC_AUTH_HEADER" # "Bearer <token>"
+# #       anthropic-beta: "oauth-2025-04-20"
+# #       x-api-key: "" # blank so the OAuth Bearer header is the only credential
+
+# # - model_name: claude/opus
+# #   model_info:
+# #     mode: chat
+# #   litellm_params:
+# #     model: anthropic/claude-opus-4-8
+# #     api_key: "unused" # placeholder to satisfy litellm; suppressed below
+# #     extra_headers:
+# #       Authorization: "os.environ/ANTHROPIC_AUTH_HEADER" # "Bearer <token>"
+# #       anthropic-beta: "oauth-2025-04-20"
+# #       x-api-key: "" # blank so the OAuth Bearer header is the only credential
+
+# # - model_name: claude/opus-passthrough
+# #   litellm_params:
+# #     model: anthropic/claude-opus-4-8
+
+# # - model_name: claude/sonnet-passthrough
+# #   litellm_params:
+# #     model: anthropic/claude-sonnet-5
+
+# - model_name: gpt-4o
+#   litellm_params:
+#     model: openai/gpt-4o
+#     api_key: "os.environ/OPENAI_API_KEY"

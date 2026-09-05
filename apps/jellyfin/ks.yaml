@@ -1,0 +1,58 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app jellyfin
+  namespace: &namespace jellyfin
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/jellyfin/app
+  components:
+    - ../../../components/nfs-scaler
+    - ../../../components/anubis
+  postBuild:
+    substitute:
+      APP: *app
+      APP_NAMESPACE: *namespace
+      ANUBIS_TARGET: http://jellyfin:8096
+      # Must track the kind app-template actually renders. jellyfin became a
+      # Deployment on 2026-06-20 but this stayed StatefulSet, so KEDA pointed at a
+      # workload that does not exist and scale-to-zero was silently off for weeks.
+      NFS_SCALAR_CONTROLLER: Deployment
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+
+# ---
+# # yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+# apiVersion: kustomize.toolkit.fluxcd.io/v1
+# kind: Kustomization
+# metadata:
+#   name: &app jellyfin-beta
+#   namespace: &namespace jellyfin
+# spec:
+#   targetNamespace: *namespace
+#   interval: 30m
+#   retryInterval: 1m
+#   timeout: 3m
+#   path: ./apps/jellyfin/beta
+#   components:
+#     - ../../../components/nfs-scaler
+#     - ../../../components/anubis
+#   postBuild:
+#     substitute:
+#       APP: *app
+#       APP_NAMESPACE: *namespace
+#       ANUBIS_TARGET: http://jellyfin-beta:8096
+#       NFS_SCALAR_CONTROLLER: StatefulSet
+#   prune: true
+#   sourceRef:
+#     kind: GitRepository
+#     name: flux-system
+#     namespace: flux-system

@@ -1,0 +1,25 @@
+---
+# Never self-ban. AS7018 is all of AT&T (home ISP) — broad, but it guarantees the home
+# connection is never banned even when the dynamic IP changes. Pair with key-only SSH
+# (PasswordAuthentication no) on the VPS so brute-force can't succeed regardless. To
+# tighten, replace the ASN match with a specific IP/CIDR (uncomment `ip:` below).
+#
+# The field is ASN*N*umber — two Ns. `crowdsecurity/geoip-enrich` declares it as
+# `- meta: ASNNumber` (see /etc/crowdsec/parsers/s02-enrich/geoip-enrich.yaml in the
+# container). This read `evt.Meta.ASNumber` until 2026-08-10, which is not a field
+# any parser sets, so the expression was never true and this whitelist had never once
+# fired — the "safety net" was decorative. It surfaced when a deliberate 429 burst
+# banned the home IP for 4h and put it in the nftables drop set.
+#
+# An undefined field is silently false here, so a typo cannot fail loudly. Verify by
+# tripping a scenario from home and checking the whitelist actually counted:
+#   cscli metrics show acquisition   # "Lines whitelisted" must be non-zero
+#   cscli decisions list --ip <home>  # must stay empty
+name: custom/home-whitelist
+description: "Whitelist home ISP (AT&T, AS7018) so we never self-ban"
+whitelist:
+  reason: "home ISP (AT&T, AS7018)"
+  # ip:
+  #   - "x.x.x.x"
+  expression:
+    - evt.Meta.ASNNumber == "7018"

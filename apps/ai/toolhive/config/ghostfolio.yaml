@@ -1,0 +1,41 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserver_v1beta1.json
+# Tanguille: ghostfolio.default.svc.cluster.local:3333 — ghostfolio lives in the
+# `ghostfolio` namespace here (not `default`), so URL adapted accordingly.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: ghostfolio
+spec:
+  image: ghcr.io/mhajder/ghostfolio-mcp:1.6.0@sha256:756ff45cac65ad30f9f1d846f1a6fbc319ec450f2b83fbe4d1b4f8d233a7f1f2
+  # ghostfolio-mcp's transport selection only recognizes "http"/"sse" as literal
+  # values; "streamable-http" silently falls through to stdio default while the
+  # proxy still expects a network listener — crash loop. Keep stdio.
+  transport: stdio
+  proxyPort: 8080
+  groupRef:
+    name: all
+  env:
+    - name: GHOSTFOLIO_URL
+      value: http://ghostfolio.ghostfolio.svc.cluster.local:3333
+    - name: READ_ONLY_MODE
+      value: "true"
+  secrets:
+    - name: toolhive-secrets
+      key: GHOSTFOLIO_TOKEN
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 100Mi

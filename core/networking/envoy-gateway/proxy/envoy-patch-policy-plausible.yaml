@@ -1,0 +1,31 @@
+---
+# yaml-language-server: $schema=https://github.com/datreeio/CRDs-catalog/raw/refs/heads/main/gateway.envoyproxy.io/envoypatchpolicy_v1alpha1.json
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: plausible
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: envoy-towonel
+  type: JSONPatch
+  jsonPatches:
+    - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
+      name: plausible_analytics
+      operation:
+        op: add
+        path: ""
+        value:
+          name: plausible_analytics
+          type: STRICT_DNS
+          dns_lookup_family: V4_ONLY
+          load_assignment:
+            cluster_name: plausible_analytics
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: plausible.plausible.svc.cluster.local
+                          port_value: 8000

@@ -1,0 +1,43 @@
+---
+# For configuration options and examples, please see:
+# https://github.com/benphelps/homepage/wiki/Settings
+
+background: https://images.unsplash.com/photo-1502790671504-542ad42d5189?auto=format&fit=crop&w=2560&q=80
+backgroundOpacity: 0.5
+
+providers:
+  openweathermap: openweathermapapikey
+  weatherapi: weatherapiapikey
+  longhorn:
+    # In-cluster service, NOT the ingress. Homepage fetches this server-side, so
+    # it has no Authentik session; the ingress SecurityPolicy covers /v1 too and
+    # 302s the widget to an HTML login page, which then dies in JSON.parse and
+    # 500s the widget. Do NOT exempt /v1 from that policy instead — the Longhorn
+    # management API accepts writes and must stay behind auth.
+    url: http://longhorn-frontend.longhorn-system.svc.cluster.local
+
+layout:
+  Media:
+    style: row
+    columns: 4
+  Home Automation:
+    style: row
+    columns: 4
+  AI:
+    style: row
+    columns: 4
+  Office:
+    style: row
+    columns: 4
+  Applications:
+    style: row
+    columns: 4
+  Operations:
+    style: row
+    columns: 4
+  Development:
+  Security:
+  DNS:
+  Storage:
+    style: row
+    columns: 4

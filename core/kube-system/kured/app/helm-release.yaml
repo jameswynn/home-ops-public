@@ -1,0 +1,60 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kubereboot
+spec:
+  interval: 5m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 5.10.0
+  url: oci://ghcr.io/kubereboot/charts/kured
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app kured
+  namespace: kube-system
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: kubereboot
+  values:
+    image:
+      repository: ghcr.io/kubereboot/kured
+      tag: 1.23.0
+    tolerations:
+      - key: "arm"
+        value: "true"
+        operator: "Equal"
+        effect: "NoSchedule"
+    updateStrategy: RollingUpdate
+    configuration:
+      startTime: "2:00"
+      endTime: "5:00"
+      period: "1h0m0s"
+      timeZone: "${CLUSTER_TZ}"
+      rebootCommand: "/usr/bin/systemctl reboot"
+      #notifyUrl: "${SECRET_KURED_TELEGRAM_WEBHOOK}"
+      #notifyUrl: "${SECRET_KURED_DISCORD_WEBHOOK}"
+      messageTemplateDrain: "⏳ Draining node %s"
+      messageTemplateReboot: "♻️ Rebooted node %s"
+      # 15m, up from 5m. Longhorn PDBs routinely block a drain past 5m while
+      # replicas rebuild; with forceReboot the old timeout meant kured cut the
+      # node out mid-rebuild, and the resulting replica churn is more etcd and
+      # disk load than just waiting. Fits the 02:00-05:00 window either way —
+      # kured holds a cluster-wide lock, so it is one node at a time.
+      drainTimeout: "900s"
+      forceReboot: true
+    metrics:
+      create: true
+  valuesFrom:
+    - kind: Secret
+      name: *app
+      valuesKey: notifyUrl
+      targetPath: configuration.notifyUrl

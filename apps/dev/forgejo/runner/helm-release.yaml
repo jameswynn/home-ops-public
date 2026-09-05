@@ -1,0 +1,233 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app forgejo-runner
+  namespace: dev
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  install:
+    timeout: 10m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 10m
+    remediation:
+      retries: 3
+  dependsOn:
+    - name: forgejo
+      namespace: dev
+  values:
+    # fsGroup/fsGroupChangePolicy are POD-level fields — they are not valid in a
+    # container securityContext, which is where they used to be. runAsUser is set
+    # per-container instead of here: the dind sidecar must run as root, so a
+    # pod-wide runAsUser: 1000 would break it.
+    defaultPodOptions:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      # muspelheim's etcd WAL sits on a DRAM-less Crucial BX500 sharing one LVM
+      # VG with the Longhorn replica store. This pod is the single worst disk
+      # offender on that node: dind writes every image layer, buildkit cache and
+      # job workspace into /var/lib/docker, and layer deletes issue discards —
+      # exactly the pattern that stalls etcd commits on a drive with no DRAM
+      # cache.
+      #
+      # Soft, not required: both docker-data and runner-data are local-path RWO
+      # PVCs, so their PVs carry a `kubernetes.io/hostname` affinity pinning
+      # them to muspelheim, and a required rule would leave this StatefulSet
+      # permanently Pending. Soft is a no-op until the PVCs are recreated —
+      # neither holds anything worth keeping (a docker layer cache and a
+      # generated config file), so deleting them is the cheap way to make the
+      # move happen, but that is a deliberate manual step.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - muspelheim
+    service:
+      main:
+        controller: main
+        enabled: false
+    controllers:
+      main:
+        type: statefulset
+        replicas: 1
+        # The generated ConfigMap no longer carries a name hash, so a config edit
+        # will not roll this StatefulSet on its own — reloader does it instead.
+        annotations:
+          reloader.stakater.com/auto: "true"
+        initContainers:
+          # No `register` step: this runner is created in Forgejo's UI, which issues a
+          # persistent UUID+token pair. Those are handed to the daemon directly through
+          # `server.connections` — the same model as the VPS runner. A registration
+          # token would be single-use and would need re-minting on every rebuild.
+          #
+          # The credentials cannot live in the ConfigMap, so the declarative part of
+          # the config stays in resources/config.yaml and this container appends the
+          # secret-derived block to produce the file the daemon actually reads.
+          config:
+            image: &image
+              repository: code.forgejo.org/forgejo/runner
+              tag: 13.0.0
+              pullPolicy: IfNotPresent
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+            # `$${VAR}`, not `${VAR}`: Flux runs envsubst over every manifest (the
+            # cluster-wide postBuild patch in flux/apps.yaml) and cannot distinguish a
+            # shell variable from one of its own. In strict mode an unknown name fails
+            # the whole build — "variable not set (strict mode): FORGEJO_INSTANCE_URL".
+            # The `$$` escape makes envsubst emit a literal `${VAR}` for the shell.
+            command:
+              - sh
+              - -c
+              - |
+                set -e
+                umask 077
+                cp /config/config.yaml /data/runner-config.yml
+                cat >> /data/runner-config.yml <<EOF
+
+                server:
+                  connections:
+                    forgejo:
+                      url: "$${FORGEJO_INSTANCE_URL}"
+                      uuid: "$${RUNNER_UUID}"
+                      token: "$${RUNNER_TOKEN}"
+                EOF
+                echo "Wrote /data/runner-config.yml for $${FORGEJO_INSTANCE_URL}"
+            env:
+              # The in-cluster service, NOT forge.wynning.tech — this keeps CI off the
+              # public path entirely: no towonel tunnel, no Coraza WAF (which 403s
+              # gzipped git-upload-pack bodies), no anti-scraper rate limit.
+              - name: FORGEJO_INSTANCE_URL
+                value: http://forgejo-http.dev.svc.cluster.local:3000
+              - name: RUNNER_UUID
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: UUID
+              - name: RUNNER_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: TOKEN
+        containers:
+          main:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+            image: *image
+            # Waiting on cert.pem alone loses a race: dind's entrypoint generates the
+            # certs and only then starts dockerd, so the file exists while the socket is
+            # still closed and the daemon exits 1 with "cannot ping the docker daemon".
+            # Probe the port as well. busybox nc is in this image and `nc -z` returns 0
+            # for a listening port, 1 for a closed one (both verified in the pod).
+            command:
+              - sh
+              - -c
+              - |
+                until [ -f /certs/client/cert.pem ] && nc -z localhost 2376; do
+                  echo "waiting for docker daemon..."
+                  sleep 2
+                done
+                exec forgejo-runner daemon --config /data/runner-config.yml
+            env:
+              - name: DOCKER_HOST
+                value: tcp://localhost:2376
+              - name: DOCKER_CERT_PATH
+                value: /certs/client
+              - name: DOCKER_TLS_VERIFY
+                value: "1"
+            resources:
+              requests:
+                memory: 100Mi
+                cpu: 10m
+                ephemeral-storage: 200Mi
+              limits:
+                memory: 1Gi
+                ephemeral-storage: 500Mi
+          daemon:
+            image:
+              repository: mirror.gcr.io/docker
+              tag: 29.7.2-dind
+            # dind needs root; it is explicitly exempt from the 1000 used elsewhere.
+            securityContext:
+              privileged: true
+              runAsUser: 0
+            env:
+              - name: DOCKER_TLS_CERTDIR
+                value: /certs
+            # Job containers spawned by dind run inside THIS container's cgroup — they are
+            # not pods and get no allocation of their own, so every image pull, layer
+            # extract, buildkit solve and job process is charged against this limit.
+            #
+            # It used to be 200Mi. Idle dockerd+containerd+buildkit alone is ~120Mi, which
+            # left ~80Mi for all concurrent CI work: the cgroup sat pinned at its ceiling
+            # for hours at a time, the kernel OOM-killed inside it 7 times in a day, and
+            # the resulting reclaim thrash showed up as 5049s of memory stall on the node
+            # in 24h against <=71s on every other node.
+            #
+            # Those kills are invisible to Kubernetes. The victims live in a nested cgroup
+            # dockerd created, so cAdvisor never attributes them to this pod — no
+            # OOMKilled status, no event. Only node_vmstat_oom_kill (node-exporter,
+            # /proc/vmstat) records them, so check that metric before believing that a
+            # runner problem "isn't memory".
+            #
+            # 4Gi against runner.capacity: 2 is ~2Gi per concurrent job, the same per-job
+            # budget the VPS runner gets (2G for the whole stack at capacity 1).
+            resources:
+              requests:
+                memory: 512Mi
+                cpu: 10m
+                ephemeral-storage: 200Mi
+              limits:
+                memory: 4Gi
+                ephemeral-storage: 500Mi
+
+    persistence:
+      docker-certs:
+        enabled: true
+        type: emptyDir
+        sizeLimit: 100Mi
+        globalMounts:
+          - path: /certs
+      docker-data:
+        enabled: true
+        accessMode: ReadWriteOnce
+        storageClass: local-path
+        size: 10Gi
+        globalMounts:
+          - path: /var/lib/docker
+      # advancedMounts, not globalMounts: the `config` initContainer writes
+      # /data/runner-config.yml and the daemon reads it, so both need naming.
+      runner-data:
+        enabled: true
+        accessMode: ReadWriteOnce
+        storageClass: local-path
+        size: 10Gi
+        advancedMounts:
+          main:
+            config:
+              - path: /data
+            main:
+              - path: /data
+      # Only the initContainer reads this — it is the template that gets the
+      # credentials appended. The daemon reads the generated /data/runner-config.yml.
+      config:
+        enabled: true
+        type: configMap
+        name: forgejo-runner-configmap
+        advancedMounts:
+          main:
+            config:
+              - path: /config

@@ -1,0 +1,89 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/gitrepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: private-apps-forgejo
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  timeout: 3m
+  ref:
+    branch: main
+  secretRef:
+    name: private-apps-forgejo
+  url: https://forge.wynning.tech/james/flux-private-apps
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.extensions.fluxcd.io/artifactgenerator_v1beta1.json
+apiVersion: source.extensions.fluxcd.io/v1beta1
+kind: ArtifactGenerator
+metadata:
+  name: private-apps
+  namespace: flux-system
+spec:
+  sources:
+    - alias: private-apps
+      kind: GitRepository
+      name: private-apps-forgejo
+    - alias: home-ops
+      kind: GitRepository
+      name: flux-system
+  artifacts:
+    - name: private-apps
+      copy:
+        - from: "@home-ops/components/**"
+          to: "@artifact/components/"
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: private-apps
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  path: ./private-apps
+  prune: true
+  sourceRef:
+    kind: ExternalArtifact
+    name: private-apps
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-settings
+      - kind: Secret
+        name: cluster-secrets
+  patches:
+    - patch: |-
+        apiVersion: kustomize.toolkit.fluxcd.io/v1
+        kind: Kustomization
+        metadata:
+          name: not-used
+        spec:
+          decryption:
+            provider: sops
+            secretRef:
+              name: sops-age
+      target:
+        group: kustomize.toolkit.fluxcd.io
+        kind: Kustomization
+        labelSelector: "!disable-global-decryption"
+    - patch: |-
+        apiVersion: kustomize.toolkit.fluxcd.io/v1
+        kind: Kustomization
+        metadata:
+          name: not-used
+        spec:
+          postBuild:
+            substituteFrom:
+              - kind: ConfigMap
+                name: cluster-settings
+              - kind: Secret
+                name: cluster-secrets
+      target:
+        group: kustomize.toolkit.fluxcd.io
+        kind: Kustomization
+        labelSelector: "!disable-global-substitutions"

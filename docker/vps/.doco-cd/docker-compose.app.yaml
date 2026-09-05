@@ -1,0 +1,42 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# doco-cd bootstrap — the GitOps controller for the VPS compose stacks.
+# The non-standard filename (docker-compose.app.yaml) keeps doco-cd's auto_discovery
+# from picking this up, so it never redeploys itself; start it by hand with an explicit -f:
+#   sops -d secret.sops.env > .env
+#   docker compose -f docker-compose.app.yaml up -d
+name: doco-cd
+services:
+  doco-cd:
+    container_name: doco-cd
+    image: ghcr.io/kimdre/doco-cd:0.109.2
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: America/Chicago
+      # The .doco-cd.yaml deploy config lives here (relative to repo root), not at the root.
+      DEPLOY_CONFIG_BASE_DIR: ./docker/vps/
+      # Poll this repo and reconcile ./docker/vps per .doco-cd.yaml (no inbound webhook).
+      POLL_CONFIG: |
+        - url: https://forge.wynning.tech/james/home-ops.git
+          reference: main
+          interval: 180
+    ports:
+      - "127.0.0.1:9120:9120"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - data:/data
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - "CMD"
+        - "/doco-cd"
+        - "healthcheck"
+      start_period: 15s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  data:

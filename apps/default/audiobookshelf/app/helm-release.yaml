@@ -1,0 +1,105 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app audiobookshelf
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  values:
+    controllers:
+      audiobookshelf:
+        pod:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile: { type: RuntimeDefault }
+        containers:
+          app:
+            image:
+              repository: ghcr.io/advplyr/audiobookshelf
+              tag: 2.36.0@sha256:180acad33d69c99ed208676465d8edcb268fa46967735579a7810859885b1a8e
+            env:
+              AUDIOBOOKSHELF_UID: 1000
+              AUDIOBOOKSHELF_GID: 1000
+              CONFIG_PATH: /config
+              METADATA_PATH: /config/metadata
+            probes:
+              liveness: &probes
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthcheck
+                    port: &port 80
+                  initialDelaySeconds: 0
+                  periodSeconds: 10
+                  timeoutSeconds: 1
+                  failureThreshold: 3
+              readiness: *probes
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: { drop: [ "ALL" ] }
+            # CPU from 7d of Prometheus data: p50 1m, p95 2m, max 27m. The old
+            # 100m request over-reserved by ~50x. 25m is the practical request
+            # floor. No CPU limit, per the cluster convention.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 150Mi
+                ephemeral-storage: 10Mi
+              limits:
+                memory: 300Mi
+                ephemeral-storage: 20Mi
+    service:
+      app:
+        controller: audiobookshelf
+        ports:
+          http:
+            port: *port
+
+    route:
+      app:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "AudioBookshelf"
+          gethomepage.dev/description: "Audiobook management"
+          gethomepage.dev/group: "Media"
+          gethomepage.dev/icon: "audiobookshelf.png"
+          gethomepage.dev/weight: "100"
+        hostnames:
+          - "abs.${SECRET_INTERNAL_DOMAIN}"
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+
+    persistence:
+      config:
+        existingClaim: *app
+      cache:
+        type: emptyDir
+        sizeLimit: 100Mi
+        globalMounts:
+          - path: /.npm
+      media:
+        type: nfs
+        server: ${SECRET_NAS_URL}
+        path: /volume1/media
+        globalMounts:
+          - path: /media
+            # readOnly: true

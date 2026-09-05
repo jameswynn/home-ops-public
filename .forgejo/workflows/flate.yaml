@@ -1,0 +1,75 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: "Flate"
+
+on:
+  pull_request:
+    branches:
+      - "main"
+
+concurrency:
+  group: ${{ forge.workflow }}-${{ forge.event.number || forge.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Flate Test
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04@sha256:4288050ddd71ac2e5f42465c474aec8b838792dec85bb284405db7c180138580
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # flate --base needs merge-base history
+          set-safe-directory: 'true'
+
+      # Installed by hand rather than via home-operations/flate/action: no workflow
+      # on this Forgejo has ever used a `uses:` with a subdirectory path on an
+      # absolute URL, and that form fails the run at task-claim time with no logs.
+      - name: Install flate
+        shell: bash
+        env:
+          # Must match the github:home-operations/flate pin in //mise.toml so a local
+          # `flate test` agrees with CI. Renovate groups the two into one PR.
+          # renovate: datasource=github-releases depName=home-operations/flate
+          FLATE_VERSION: "0.5.1"
+        run: |-
+          set -euo pipefail
+          base="https://github.com/home-operations/flate/releases/download/v${FLATE_VERSION}"
+          tarball="flate_${FLATE_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "${tarball}" "${base}/${tarball}"
+          echo "$(curl -fsSL "${base}/${tarball}.sha256")  ${tarball}" | sha256sum -c -
+          tar -xzf "${tarball}" flate
+          install -m 0755 flate /usr/local/bin/flate
+          rm -f "${tarball}" flate
+          flate --version
+
+      # Runs before the rm below so the two entrypoints stay unchanged between base and
+      # head — changed-only mode then skips them entirely, instead of reporting them as
+      # deletions on every PR. Never gates the job: konflate owns PR review, this is the
+      # cluster-is-down fallback.
+      - name: Render diff to step summary
+        shell: bash
+        run: |-
+          {
+            echo '## Flux rendered diff'
+            echo '```diff'
+            flate diff all --path . --base "${{ forge.event.pull_request.base.sha }}" -o diff || true
+            echo '```'
+          } >> "${FORGEJO_STEP_SUMMARY}"
+
+      # flate has no ArtifactGenerator support and resolves ExternalArtifact only when
+      # status.artifact.url is a file:// path, so these two entrypoints can never render
+      # offline. A *blocked* resource alone flips flate's exit code, and flate has no
+      # --exclude flag, so the only lever is removing them from the ephemeral CI checkout.
+      # The app trees behind them are validated in flux-private-apps / agentic-sdlc.
+      - name: Drop offline-unrenderable entrypoints
+        shell: bash
+        run: |-
+          rm -f flux/agentic-sdlc.yaml flux/private-apps.yaml
+
+      - name: Run flate test
+        shell: bash
+        run: |-
+          flate test all --path .

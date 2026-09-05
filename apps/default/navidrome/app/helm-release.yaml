@@ -1,0 +1,117 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: navidrome
+  namespace: default
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 3
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    controllers:
+      main:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: "OnRootMismatch"
+            supplementalGroups:
+              - 100
+        containers:
+          main:
+            image:
+              repository: ghcr.io/navidrome/navidrome
+              tag: 0.63.2
+            env:
+              TZ: ${CLUSTER_TZ}
+              ND_DATAFOLDER: /config
+              ND_ENABLEGRAVATAR: "true"
+              ND_LOGLEVEL: info
+              ND_MUSICFOLDER: /media/music
+              ND_PORT: &port 80
+              ND_PROMETHEUS_ENABLED: "true"
+              # ND_REVERSEPROXYUSERHEADER: "Remote-User"
+              # ND_REVERSEPROXYWHITELIST: "${NET_POD_CIDR}"
+              ND_SCANSCHEDULE: "@every 1h"
+              ND_ENABLESHARING: "true"
+            # CPU from 7d of Prometheus data: p50 1m, p95 1m, max 36m (the max
+            # is the hourly library scan). 25m is the practical request floor.
+            # No CPU limit, per the cluster convention — scans finish faster
+            # when they can burst.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 250Mi
+                ephemeral-storage: 10Mi
+              limits:
+                memory: 750Mi
+                ephemeral-storage: 50Mi
+
+    service:
+      main:
+        controller: main
+        ports:
+          http:
+            port: *port
+
+    serviceMonitor:
+      main:
+        serviceName: main
+        enabled: true
+        endpoints:
+          - port: http
+            scheme: http
+            path: /metrics
+            interval: 1m
+            scrapeTimeout: 10s
+
+    route:
+      main:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "Navidrome"
+          gethomepage.dev/description: "Music!"
+          gethomepage.dev/group: "Media"
+          gethomepage.dev/icon: "navidrome.png"
+          gethomepage.dev/weight: "90"
+          external-dns.alpha.kubernetes.io/hostname: "navidrome.${SECRET_ROOT_DOMAIN}"
+        hostnames:
+          - "navidrome.${SECRET_ROOT_DOMAIN}"
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+          - name: envoy-towonel
+            namespace: networking
+
+    persistence:
+      media:
+        enabled: true
+        type: nfs
+        server: ${SECRET_NAS_URL}
+        path: /volume1/media
+        globalMounts:
+          - path: /media
+            readOnly: true
+
+      data:
+        enabled: true
+        existingClaim: config-navidrome-0
+        globalMounts:
+          - path: /config

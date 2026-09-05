@@ -1,0 +1,89 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+#
+# Tooling required to operate this repo, pinned so every machine resolves the
+# same CLIs. Renovate's `mise` manager keeps the versions below current.
+#
+#   mise trust && mise install    # first time in a fresh clone
+#   mise install                  # after a version bump lands
+#   mise up                       # bump everything (or let Renovate PR it)
+#
+# PROVENANCE — where each tool came from before mise:
+#   [brew]    was a line in Brewfile
+#   [arkade]  was installed by setup.sh (apt or arkade)
+#   [new]     the repo already depended on it, but nothing installed it
+#
+# Brewfile and setup.sh are intentionally left in place as the brew/apt escape
+# hatch. Their *personal shell* half (atuin, bat, eza, fd, rg, zoxide, starship,
+# zellij, tealdeer, dysk, trash-cli, gh, glab, git-credential-oauth) is out of
+# scope here — it is not needed to operate the cluster. See
+# mise.global.toml.example to manage those with mise too.
+#
+# ugrep (used by tools/get_docker_images.sh) is NOT manageable by mise: upstream
+# Genivia/ugrep ships only Windows binaries on its GitHub releases, so every
+# backend resolves to ugrep.exe. Keep installing it via brew/apt.
+
+[tools]
+
+## Kubernetes & Flux ##########################################################
+kubectl = "1.37.0"                      # [brew] [arkade]
+flux2 = "2.9.4"                         # [brew] [arkade] — installs the `flux` binary
+# Pinned to 3.x on purpose: helm 4.x is released, but the only local helm
+# consumers here are `helm template` and the helmfile bootstrap in helmfile.yaml,
+# neither of which has been exercised against v4. Bump deliberately, not casually.
+helm = "3.21.4"                         # [brew] [arkade]
+helmfile = "1.7.4"                      # [new] — required by ./helmfile.yaml (flux-operator bootstrap)
+kustomize = "5.8.1"                     # [arkade]
+kubeconform = "0.8.0"                   # [new] — manifest validation
+k9s = "0.51.0"                          # [brew] [arkade]
+kubectx = "0.11.0"                      # [brew]
+kubens = "0.11.0"                       # [brew] — ships alongside kubectx
+krew = "0.5.0"                          # [brew]
+kubent = "0.7.3"                        # [brew] — deprecated-API scanner
+k3d = "5.9.0"                           # [brew]
+cilium-cli = "0.20.0"                   # [brew] — cluster CNI is Cilium
+"github:aquasecurity/kube-bench" = "0.16.0"  # [arkade] — CIS benchmark, not in the mise registry
+# kubectl-cnpg plugin for the cloudnative-pg cluster. The release archive is
+# named after the repo, so the binary has to be selected explicitly.
+"github:cloudnative-pg/cloudnative-pg" = { version = "1.30.0", exe = "kubectl-cnpg" }  # [brew]
+
+## Flux rendering / CI parity #################################################
+# Must stay in lockstep with FLATE_VERSION in .forgejo/workflows/flate.yaml —
+# a local `flate test` that disagrees with CI is worse than not running it.
+"github:home-operations/flate" = "0.5.1"  # [brew] (was a cask: home-operations/tap/flate)
+
+## Secrets ####################################################################
+sops = "3.13.3"                         # [brew] [arkade]
+age = "1.3.2"                           # [brew] [arkade]
+bitwarden = "2026.7.0"                  # [brew] — the `bw` CLI
+
+## Shell plumbing used by Taskfiles and tools/ ################################
+task = "3.53.1"                         # [brew] [arkade] — go-task, entrypoint for everything
+yq = "4.53.6"                           # [brew] [arkade]
+jq = "1.8.2"                            # [brew] [arkade]
+mc = "RELEASE.2025-08-13T08-35-41Z"     # [brew] [arkade] — minio client, tools/create-bucket.sh
+
+## Linting & git hooks ########################################################
+pre-commit = "4.6.2"                    # [new] — drives .pre-commit-config.yaml
+lefthook = "2.1.12"                     # [new] — drives .lefthook.toml
+yamlfmt = "0.21.0"                      # [brew]
+gitleaks = "8.30.1"                     # [brew]
+shellcheck = "0.11.0"                   # [brew]
+just = "1.58.0"                         # [new] — .lefthook.toml formats *.just on commit
+
+## Ansible ####################################################################
+# ansible-core, not the full `ansible` distribution: the collections and roles
+# this repo needs are pinned explicitly in ansible/requirements.yaml, and the
+# `ansible` package exposes only `ansible-community` as a console script —
+# ansible-playbook/ansible-galaxy, which the Taskfiles call, come from core.
+"pipx:ansible-core" = "2.21.3"          # [arkade] (was apt `ansible`)
+
+## Git & forge ################################################################
+# tea drives forge.wynning.tech (self-hosted Forgejo) from the CLI — PR
+# create/view/status. Unlike the gh/glab left out above, there's no GitHub or
+# GitLab account backing this repo, so tea isn't a personal-shell nicety, it's
+# the only non-web way to open a PR here.
+"forgejo:gitea/tea" = { version = "0.15.1", api_url = "https://gitea.com/api/v1" }  # [new]
+
+[env]
+# Replaces ./.envrc — the kubeconfig `task kubeconfig` writes to the repo root.
+KUBECONFIG = "{{config_root}}/kubeconfig"

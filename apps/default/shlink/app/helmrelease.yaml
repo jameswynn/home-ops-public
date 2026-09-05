@@ -1,0 +1,139 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: shlink
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 3
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    controllers:
+      main:
+        pod:
+          # shlink runs as UID/GID 2000, but the VolSync mover restores data as
+          # 1000 (the shared NFS Kopia repo is 1000-owned). fsGroup re-groups the
+          # restored volume to 2000 so the pod can read its own data.
+          securityContext:
+            fsGroup: 2000
+            fsGroupChangePolicy: OnRootMismatch
+        annotations:
+          secret.reloader.stakater.com/reload: shlink
+        containers:
+          api:
+            image:
+              repository: ghcr.io/shlinkio/shlink
+              tag: 5.1.5@sha256:77b8eb87bcb1a56bd0ecc590398d415545e5ba83414f28d37dc565a91c3c50b2
+            env:
+              USER_ID: "2000"
+              SHLINK_SERVER_NAME: "Wynning Tech"
+              DEFAULT_DOMAIN: &api-host "ln.${SECRET_ROOT_DOMAIN}"
+              DISABLE_TRACKING_FROM: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+              ENABLE_PERIODIC_VISIT_LOCATE: "true"
+              IS_HTTPS_ENABLED: "true"
+              PORT: &api-port 8081
+              TIMEZONE: ${CLUSTER_TZ}
+            envFrom:
+              - secretRef:
+                  name: shlink
+            securityContext:
+              runAsUser: 2000
+              runAsGroup: 2000
+              runAsNonRoot: true
+          web:
+            image:
+              repository: ghcr.io/shlinkio/shlink-web-client
+              tag: 4.8.1@sha256:dc8bf3565a25bd0602ff11ee352920830ce457ab58a2b2c62f2ebb23e8c8b9ee
+            env:
+              UID: "2000"
+              SHLINK_SERVER_URL: &api-url "https://ln.${SECRET_ROOT_DOMAIN}"
+            envFrom:
+              - secretRef:
+                  name: shlink
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities: {drop: ["ALL"]}
+
+    service:
+      main:
+        controller: main
+        ports:
+          api:
+            port: *api-port
+          http:
+            port: &web-port 8080
+            primary: true
+
+    route:
+      api:
+        annotations:
+          gatus.home-operations.com/endpoint: |
+            url: https://ln.wynning.tech/rest/health
+            conditions:
+              - "[STATUS] == 200"
+          external-dns.alpha.kubernetes.io/hostname: *api-host
+        hostnames:
+          - "ln.${SECRET_ROOT_DOMAIN}"
+        rules:
+          - backendRefs:
+              - name: shlink
+                port: *api-port
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+          - name: envoy-internal
+            namespace: networking
+
+      web:
+        annotations:
+          internal.wynning.tech/hostname: "shlink.${SECRET_INTERNAL_DOMAIN}"
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "Shlink"
+          gethomepage.dev/description: "Link Shortener"
+          gethomepage.dev/group: "Office"
+          gethomepage.dev/icon: "shlink.png"
+          gethomepage.dev/weight: "100"
+          gethomepage.dev/pod-selector: "app.kubernetes.io/name = shlink"
+        hostnames:
+          - "shlink.${SECRET_INTERNAL_DOMAIN}"
+        rules:
+          - backendRefs:
+              - name: shlink
+                port: *web-port
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+
+    persistence:
+      data:
+        enabled: true
+        existingClaim: shlink
+        advancedMounts:
+          main:
+            api:
+              - path: /etc/shlink/data
+      # tdata:
+      #   type: emptyDir
+      #   sizeLimit: 100Mi
+      #   globalMounts:
+      #     - path: /etc/shlink/data
+
+      log:
+        type: emptyDir
+        sizeLimit: 100Mi
+        globalMounts:
+          - path: /etc/shlink/data/log

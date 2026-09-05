@@ -1,0 +1,65 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: envoy-gateway
+  namespace: &namespace networking
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./core/networking/envoy-gateway/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: envoy-gateway-proxy
+  namespace: &namespace networking
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./core/networking/envoy-gateway/proxy
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+
+# ---
+# # yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+# apiVersion: kustomize.toolkit.fluxcd.io/v1
+# kind: Kustomization
+# metadata:
+#   name: envoy-gateway-tailscale
+#   namespace: &namespace networking
+# spec:
+#   targetNamespace: *namespace
+#   interval: 30m
+#   retryInterval: 1m
+#   timeout: 3m
+#   path: ./core/networking/envoy-gateway/tailscale
+#   prune: true
+#   sourceRef:
+#     kind: GitRepository
+#     name: flux-system
+#     namespace: flux-system
+#   decryption:
+#     provider: sops
+#     secretRef:
+#       name: sops-age
+#   postBuild:
+#     substituteFrom:
+#       - kind: ConfigMap
+#         name: cluster-settings
+#       - kind: Secret
+#         name: cluster-secrets

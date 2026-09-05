@@ -1,0 +1,55 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserver_v1beta1.json
+# Actual Budget MCP backend for Anton's accountant profile.
+# The backend is included in the authenticated unified VMCP; Cedar below grants
+# these tools only to toolhive-accountant.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: actualbudget
+spec:
+  image: docker.io/agigante80/actual-mcp-server:0.16.2@sha256:77ad980831ae1af1f0da59236573b918f2d910ffe226264cd4f1c12a3b1bd1d5
+  transport: streamable-http
+  mcpPort: &port 3600
+  groupRef:
+    name: all
+  env:
+    - name: ACTUAL_SERVER_URL
+      value: http://actual.actual.svc.cluster.local:5006
+    - name: ACTUAL_BUDGET_SYNC_ID
+      value: 4614fccc-5e18-4e2c-8dfc-02557cbba72c
+    - name: MCP_BRIDGE_DATA_DIR
+      value: /data
+    - name: MCP_BRIDGE_PORT
+      value: "3600"
+    # ToolHive expects its standard /mcp endpoint; the image defaults to /http.
+    - name: MCP_HTTP_PATH
+      value: /mcp
+    # ToolHive's generic health probe opens an MCP session. Actual keeps those
+    # sessions until its idle sweep, so use a shorter backend idle lifetime to
+    # prevent probes from exhausting the bridge's session pool.
+    - name: SESSION_IDLE_TIMEOUT_MINUTES
+      value: "2"
+    - name: MCP_ALLOW_UNAUTHENTICATED
+      value: "true"
+  secrets:
+    - name: toolhive-secrets
+      key: ACTUAL_PASSWORD
+  podTemplateSpec:
+    spec:
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: actualbudget-mcp-data
+      containers:
+        - name: mcp
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---

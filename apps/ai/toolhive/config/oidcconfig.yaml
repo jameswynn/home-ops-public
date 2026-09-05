@@ -1,0 +1,23 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpoidcconfig_v1beta1.json
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPOIDCConfig
+metadata:
+  name: toolhive-oidc
+spec:
+  type: inline
+  inline:
+    # Authentik OIDC issuer — slug must match the Authentik application slug "toolhive"
+    issuer: "https://auth.${SECRET_ROOT_DOMAIN}/application/o/toolhive/"
+    # Authentik provider client ID. The MCPOIDCConfig CRD accepts this as a
+    # literal; the client secret is loaded from the generated Secret below.
+    clientId: toolhive
+    clientSecretRef:
+      name: toolhive-oidc-secret
+      key: client_secret
+    # JWKS is fetched via OIDC discovery from the issuer; Authentik issues signed JWTs
+    # so token introspection is not required. The ExternalSecret retains the client ID
+    # alongside the secret for client-side configuration and future introspection support.
+    # Authentik resolves to the private LAN gateway from inside the cluster.
+    # Permit private-IP OIDC discovery/JWKS fetches for this internal issuer.
+    jwksAllowPrivateIP: true

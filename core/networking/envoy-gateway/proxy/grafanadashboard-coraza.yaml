@@ -1,0 +1,550 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/grafana.integreatly.org/grafanadashboard_v1beta1.json
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: coraza-waf
+spec:
+  allowCrossNamespaceImport: true
+  resyncPeriod: 10m
+  instanceSelector:
+    matchLabels:
+      grafana.internal/instance: grafana
+  json: |
+    {
+      "title": "Coraza WAF (towonel)",
+      "uid": "coraza-waf-towonel",
+      "tags": [
+        "security",
+        "waf",
+        "coraza",
+        "envoy"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "editable": true,
+      "refresh": "30s",
+      "time": {
+        "from": "now-24h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Total detections",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 8,
+            "x": 0,
+            "y": 0
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "sum"
+              ]
+            },
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" [$__interval]))",
+              "refId": "A",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "",
+              "format": "time_series"
+            }
+          ],
+          "id": 1
+        },
+        {
+          "type": "stat",
+          "title": "Distinct source IPs",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 8,
+            "x": 8,
+            "y": 0
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "colorMode": "value"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "count(sum by (client_ip)(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" | regexp `\\[client \"(?P<client_ip>[^\"]*)\"\\]` [$__range])))",
+              "refId": "A",
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "id": 2
+        },
+        {
+          "type": "stat",
+          "title": "Distinct rules triggered",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 8,
+            "x": 16,
+            "y": 0
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "colorMode": "value"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "count(sum by (id)(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" | regexp `\\[id \"(?P<id>\\d+)\"\\]` [$__range])))",
+              "refId": "A",
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "id": 3
+        },
+        {
+          "type": "timeseries",
+          "title": "Detections by CRS category",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "bars",
+                "stacking": {
+                  "mode": "normal"
+                },
+                "fillOpacity": 60,
+                "lineWidth": 1
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "sum"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"913` [$__interval]))",
+              "refId": "A",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "Scanner detection (913)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"920` [$__interval]))",
+              "refId": "B",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "Protocol enforcement (920)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"921` [$__interval]))",
+              "refId": "C",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "Protocol attack (921)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"930` [$__interval]))",
+              "refId": "D",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "LFI (930)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"931` [$__interval]))",
+              "refId": "E",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "RFI (931)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"932` [$__interval]))",
+              "refId": "F",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "RCE (932)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"933` [$__interval]))",
+              "refId": "G",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "PHP injection (933)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"941` [$__interval]))",
+              "refId": "H",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "XSS (941)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"942` [$__interval]))",
+              "refId": "I",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "SQLi (942)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"943` [$__interval]))",
+              "refId": "J",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "Session fixation (943)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"944` [$__interval]))",
+              "refId": "K",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "Java attack (944)",
+              "format": "time_series"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" |~ `id \"949` [$__interval]))",
+              "refId": "L",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "Anomaly score / blocking (949)",
+              "format": "time_series"
+            }
+          ],
+          "id": 4
+        },
+        {
+          "type": "table",
+          "title": "Top triggered rules",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 12
+          },
+          "options": {
+            "sortBy": [
+              {
+                "displayName": "Value",
+                "desc": true
+              }
+            ]
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "topk(15, sum by (id, msg)(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" | regexp `\\[id \"(?P<id>\\d+)\"\\]` | regexp `\\[msg \"(?P<msg>[^\"]*)\"\\]` [$__range])))",
+              "refId": "A",
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "id": 5
+        },
+        {
+          "type": "table",
+          "title": "Top source IPs",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 12
+          },
+          "options": {
+            "sortBy": [
+              {
+                "displayName": "Value",
+                "desc": true
+              }
+            ]
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "topk(15, sum by (client_ip)(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" | regexp `\\[client \"(?P<client_ip>[^\"]*)\"\\]` [$__range])))",
+              "refId": "A",
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "id": 6
+        },
+        {
+          "type": "table",
+          "title": "Top targeted URIs",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 20
+          },
+          "options": {
+            "sortBy": [
+              {
+                "displayName": "Value",
+                "desc": true
+              }
+            ]
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "topk(15, sum by (uri)(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" | regexp `\\[uri \"(?P<uri>[^\"]*)\"\\]` [$__range])))",
+              "refId": "A",
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "id": 7
+        },
+        {
+          "type": "piechart",
+          "title": "Detections by severity",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 20
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "values": [
+                "value"
+              ]
+            },
+            "reduceOptions": {
+              "calcs": [
+                "sum"
+              ]
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum by (severity)(count_over_time({namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" | regexp `\\[severity \"(?P<severity>[^\"]*)\"\\]` [$__range]))",
+              "refId": "A",
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "{{severity}}",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "id": 8
+        },
+        {
+          "type": "logs",
+          "title": "Recent detections",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 28
+          },
+          "options": {
+            "showTime": true,
+            "wrapLogMessage": true,
+            "dedupStrategy": "none",
+            "sortOrder": "Descending",
+            "enableLogDetails": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "{namespace=\"networking\", pod=~\"envoy-towonel-.*\"} |= \"Coraza:\" | regexp `\\[id \"(?P<id>\\d+)\"\\]` | regexp `\\[msg \"(?P<msg>[^\"]*)\"\\]` | regexp `\\[severity \"(?P<severity>[^\"]*)\"\\]` | regexp `\\[client \"(?P<client_ip>[^\"]*)\"\\]` | regexp `\\[uri \"(?P<uri>[^\"]*)\"\\]` | line_format `{{.client_ip}} -> {{.uri}}  [{{.severity}}] id={{.id}}  {{.msg}}`",
+              "refId": "A",
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": ""
+            }
+          ],
+          "id": 9
+        }
+      ]
+    }
