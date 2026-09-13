@@ -1,0 +1,90 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kubereboot
+spec:
+  interval: 5m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 6.1.0
+  url: oci://ghcr.io/kubereboot/charts/kured
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app kured
+  namespace: kube-system
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: kubereboot
+  values:
+    image:
+      repository: ghcr.io/kubereboot/kured
+      tag: 1.23.0
+    tolerations:
+      - key: "arm"
+        value: "true"
+        operator: "Equal"
+        effect: "NoSchedule"
+    updateStrategy: RollingUpdate
+    configuration:
+      startTime: "2:00"
+      endTime: "5:00"
+      # Was 1h. kured is no longer the thing spacing reboots out — the
+      # node-maintenance-gate Lease is, and that holds until Longhorn has
+      # recovered and settled. At 1h a node needed one tick to get annotated and
+      # another to act on an open gate, which burnt most of the three-hour window
+      # on waiting. This shortens nothing about the recovery wait; it only stops
+      # the window going unused.
+      period: "15m0s"
+      timeZone: "${CLUSTER_TZ}"
+      rebootCommand: "/usr/bin/systemctl reboot"
+      #notifyUrl: "${SECRET_KURED_TELEGRAM_WEBHOOK}"
+      #notifyUrl: "${SECRET_KURED_DISCORD_WEBHOOK}"
+      messageTemplateDrain: "⏳ Draining node %s"
+      messageTemplateReboot: "♻️ Rebooted node %s"
+      # 15m, up from 5m. Longhorn PDBs routinely block a drain past 5m while
+      # replicas rebuild, and the replica churn from cutting a node out
+      # mid-rebuild is more etcd and disk load than just waiting. Fits the
+      # 02:00-05:00 window either way — kured holds a cluster-wide lock, so it
+      # is one node at a time.
+      drainTimeout: "900s"
+      # Fail closed: without --force-reboot a drain that Longhorn blocks (the
+      # singleton instance-manager PDB, or block-for-eviction-if-contains-last-
+      # replica holding the last replica) leaves the node pending instead of
+      # hard-rebooting it out from under every replica engine on that node.
+      # Pending nodes are picked up by the Longhorn-aware maintenance workflow
+      # tracked in #1508 — do not set this back to true to "unstick" a node.
+      forceReboot: false
+      # #1508's third acceptance criterion. `concurrency: 1` serialises reboot
+      # *initiation* only, so the next node could be drained while the previous
+      # one's replicas were still rebuilding — that is how 2026-08-20 ended with
+      # ~49 degraded volumes. The node-maintenance-gate DaemonSet
+      # (core/kube-system/node-maintenance-gate) puts one pod on every node
+      # carrying this label, and drops it to `open` only once Longhorn says the
+      # cluster has actually recovered. kured's check is scoped to
+      # `spec.nodeName=<its own node>`, so each gate pod only ever blocks its own
+      # node, and a pod-list error returns "blocked" — the whole chain fails
+      # closed. See node-maintenance-gate.md.
+      blockingPodSelector:
+        - node-maintenance-gate=blocked
+      # Makes kured set `weave.works/kured-reboot-in-progress` on a node it means
+      # to reboot, and clear it once the reboot has demonstrably happened. The
+      # gate uses it to work out *which* node wants the maintenance slot, so it
+      # never hands the lease to a node with nothing to do. Without this the
+      # annotation is absent and no gate will ever open.
+      annotateNodes: true
+    metrics:
+      create: true
+  valuesFrom:
+    - kind: Secret
+      name: *app
+      valuesKey: notifyUrl
+      targetPath: configuration.notifyUrl

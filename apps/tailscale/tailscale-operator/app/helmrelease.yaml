@@ -1,0 +1,41 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: tailscale-operator
+  namespace: kube-system
+spec:
+  interval: 1h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 1.98.9
+  url: oci://ocharted.wynning.tech/pkgs.tailscale.com/helmcharts/tailscale-operator
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/fluxcd-community/flux2-schemas/main/helmrelease-helm-v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tailscale-operator
+  namespace: tailscale
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: tailscale-operator
+  values:
+    operatorConfig:
+      image:
+        repository: ghcr.io/tailscale/k8s-operator
+      hostname: "tailscale-operator"
+    apiServerProxyConfig:
+      mode: "true"
+    proxyConfig:
+      image:
+        repository: ghcr.io/tailscale/tailscale
+      defaultProxyClass: default
+    connectorConfig:
+      image:
+        repository: ghcr.io/tailscale/tailscale

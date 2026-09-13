@@ -1,0 +1,23 @@
+{
+  "env": {},
+  "permissions": {
+    "allow": [
+      "Bash(kustomize build:*)",
+      "Bash(flux build:*)",
+      "Bash(flux diff:*)",
+      "Bash(kubeconform:*)",
+      "Bash(helm template:*)",
+      "Bash(yq:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ],
+    "deny": [
+      "Bash(kubectl apply:*)",
+      "Bash(kubectl delete:*)",
+      "Bash(flux bootstrap:*)"
+    ]
+  },
+  "enabledPlugins": {
+    "yayamlls@yayamlls": true
+  }
+}

@@ -1,0 +1,43 @@
+---
+# For configuration options and examples, please see:
+# https://github.com/benphelps/homepage/wiki/Bookmarks
+
+- Developer:
+    - Modem:
+        - abbr: MO
+          icon: mdi-router-network
+          href: http://192.168.100.1/
+    - Flux-Cluster Repo:
+        - abbr: GH
+          icon: github-light.png
+          href: ${SECRET_GITHUB_REPO}
+    - Dreamhost Panel:
+        - abbr: DH
+          icon: https://panel.dreamhost.com/favicon.ico
+          href: https://panel.dreamhost.com
+    - Cloudflare Dash:
+        - abbr: CF
+          icon: https://dash.cloudflare.com/favicon-16x16.png
+          href: https://dash.cloudflare.com
+    - Backblaze:
+        - abbr: B2
+          icon: backblaze.png
+          href: https://secure.backblaze.com/b2_buckets.htm
+    - KubeSearch:
+        - abbr: ND
+          icon: https://kubesearch.dev/k8s-search.svg
+          href: https://kubesearch.dev
+
+- Cameras:
+    - Porch:
+        - abbr: PO
+          icon: mdi-cctv
+          href: http://amcrest1.iot.${SECRET_ROOT_DOMAIN}
+    - Driveway:
+        - abbr: DR
+          icon: mdi-cctv
+          href: http://amcrest2.iot.${SECRET_ROOT_DOMAIN}
+    - LivingRoom:
+        - abbr: LR
+          icon: mdi-cctv
+          href: http://tapo-camera-living-room.iot.${SECRET_ROOT_DOMAIN}:8080

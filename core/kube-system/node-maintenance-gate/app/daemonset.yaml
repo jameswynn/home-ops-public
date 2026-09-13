@@ -1,0 +1,132 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/apps/daemonset_v1.json
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-maintenance-gate
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: node-maintenance-gate
+  annotations:
+    # The ConfigMap is generated with disableNameSuffixHash, so a script change
+    # does not roll the pods by itself.
+    configmap.reloader.stakater.com/reload: node-maintenance-gate
+spec:
+  revisionHistoryLimit: 3
+  # The selector must NOT include the gate label: the script mutates that label
+  # on its own pod, and a selector that matched it would orphan the pod the
+  # moment it opened.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: node-maintenance-gate
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: node-maintenance-gate
+        # Ships closed. A Pending or CrashLoopBackOff gate pod still matches
+        # kured's selector (its phase filter only excludes Succeeded/Failed/
+        # Unknown), so a gate that cannot start blocks its own node.
+        node-maintenance-gate: blocked
+    spec:
+      serviceAccountName: node-maintenance-gate
+      automountServiceAccountToken: true
+      # Without this the gate is a candidate for preemption on a node under
+      # pressure, and a node with no gate pod is a node with no gate — kured's
+      # check is per-node and simply finds nothing to match.
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      # niflheim is an arm64 Pi 4 carrying the arm=true:NoSchedule taint. It runs
+      # Longhorn replicas like every other node, so an ungated niflheim is a real
+      # hole rather than a packaging detail — which is why the image below has to
+      # be multi-arch. The control-plane tolerations are belt and braces; k3s
+      # servers here are not tainted today.
+      tolerations:
+        - key: arm
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: gate
+          # alpine/k8s 1.37.0 — Alpine 3.25 with kubectl 1.37.0, jq 1.8.2, bash
+          # 5.3 and yq. Published for linux/amd64 and linux/arm64 only; both
+          # were confirmed present in the manifest index before this digest was
+          # pinned. The digest is the multi-arch index, not a platform manifest,
+          # so the same reference resolves on niflheim and on the x86 nodes.
+          image: docker.io/alpine/k8s:1.37.0@sha256:b421c2e9419edb98db39b6ab641669f4db7bb2acf354f22450c6b7e7176d1ff4
+          imagePullPolicy: IfNotPresent
+          command:
+            - "/bin/bash"
+            - "/opt/node-maintenance-gate/gate.sh"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # kubectl writes its discovery cache under $HOME; the root filesystem
+            # is read-only, so point both at the tmp emptyDir.
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - "ALL"
+          # No CPU limit, per the repo-wide convention; the memory limit doubles
+          # as the request. 192Mi covers the worst pass — kubectl streaming the
+          # full replicas.longhorn.io list into jq — with room to spare, because
+          # an OOMKilled gate crashloops and a crashlooping gate blocks its node
+          # forever rather than failing quietly.
+          resources:
+            requests:
+              cpu: 25m
+            limits:
+              memory: 192Mi
+              ephemeral-storage: 128Mi
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - test $(( $(date -u +%s) - $(cat /tmp/heartbeat) )) -lt 300
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+          volumeMounts:
+            - name: script
+              mountPath: /opt/node-maintenance-gate
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: script
+          configMap:
+            name: node-maintenance-gate
+            defaultMode: 0444
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

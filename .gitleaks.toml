@@ -1,0 +1,15 @@
+[extend]
+useDefault = true
+
+# disabledRules = [ "generic-api-key" ]
+
+[allowlist]
+description = "Ignore local build artifacts (gitignored, never committed)"
+paths = [
+  '''^tmp/''',
+  # Claude Code worktrees: full checkouts of this repo's own branches. The hook
+  # runs `gitleaks dir .`, so every file gets rescanned under a second path,
+  # which can't match the path-keyed fingerprints in .gitleaksignore. The same
+  # content is already scanned at its real path.
+  '''^\.claude/worktrees/''',
+]

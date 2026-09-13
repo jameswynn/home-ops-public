@@ -1,0 +1,119 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/core/serviceaccount_v1.json
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-maintenance-gate
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: node-maintenance-gate
+---
+# Read-only, cluster-wide. The gate has to see every node, every Longhorn node,
+# volume and replica, and the pods of every namespace that holds a local-path
+# claim — a per-node view cannot tell whether the *cluster* has recovered.
+#
+# There is deliberately no write verb here. The gate's only mutations are its own
+# pod's labels and one Lease, both granted by the namespaced Role below.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-maintenance-gate
+  labels:
+    app.kubernetes.io/name: node-maintenance-gate
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - "nodes"
+    verbs:
+      - "get"
+      - "list"
+  - apiGroups:
+      - ""
+    resources:
+      - "pods"
+      - "persistentvolumeclaims"
+    verbs:
+      - "list"
+  - apiGroups:
+      - "longhorn.io"
+    resources:
+      - "nodes"
+      - "volumes"
+      - "replicas"
+    verbs:
+      - "get"
+      - "list"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-maintenance-gate
+  labels:
+    app.kubernetes.io/name: node-maintenance-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-maintenance-gate
+subjects:
+  - kind: ServiceAccount
+    name: node-maintenance-gate
+    namespace: kube-system
+---
+# The write half, scoped to kube-system only.
+#
+# `patch` on pods cannot be narrowed to "this pod" by RBAC — there is no
+# self-subject resource for pod labels — so it is narrowed by namespace instead.
+# The gate pods are the only workload this ServiceAccount is bound to.
+#
+# The Lease is created by the gate rather than by Flux: a Flux-managed Lease
+# would have its holderIdentity reset to empty on every drift correction, which
+# is exactly the "hand the maintenance slot to another node mid-cycle" failure
+# the Lease exists to prevent. `create` cannot carry resourceNames, so the
+# create verb is on the collection and everything else is pinned to the one name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: node-maintenance-gate
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: node-maintenance-gate
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - "pods"
+    verbs:
+      - "get"
+      - "patch"
+  - apiGroups:
+      - "coordination.k8s.io"
+    resources:
+      - "leases"
+    verbs:
+      - "create"
+  - apiGroups:
+      - "coordination.k8s.io"
+    resources:
+      - "leases"
+    resourceNames:
+      - "node-maintenance-gate"
+    verbs:
+      - "get"
+      - "update"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: node-maintenance-gate
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: node-maintenance-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: node-maintenance-gate
+subjects:
+  - kind: ServiceAccount
+    name: node-maintenance-gate
+    namespace: kube-system

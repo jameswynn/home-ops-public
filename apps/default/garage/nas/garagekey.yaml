@@ -1,0 +1,18 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: garage-nas-owner
+spec:
+  clusterRef:
+    name: garage-nas
+  importKey:
+    secretRef:
+      name: garage-nas
+    accessKeyIdKey: GARAGE_NAS_ACCESS_KEY
+    secretAccessKeyKey: GARAGE_NAS_SECRET_KEY
+  allBuckets:
+    read: true
+    write: true
+    owner: true

@@ -1,0 +1,103 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/postgresql.cnpg.io/cluster_v1.json
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres
+  namespace: default
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.1-13
+  primaryUpdateStrategy: unsupervised
+  nodeMaintenanceWindow:
+    inProgress: true
+    reusePVC: true
+  storage:
+    size: 20Gi
+    storageClass: local-path
+  enableSuperuserAccess: true
+  superuserSecret:
+    name: cloudnative-pg-secret
+  resources:
+    requests:
+      cpu: 50m
+      memory: 1500Mi
+      ephemeral-storage: 200Mi
+    limits:
+      # cpu: 1500m
+      memory: 3000Mi
+      ephemeral-storage: 200Mi
+  postgresql:
+    parameters:
+      max_connections: "600"
+      max_slot_wal_keep_size: 10GB
+      shared_buffers: 512MB
+
+  monitoring:
+    enablePodMonitor: true
+
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: postgres
+        # serverName: postgres
+
+  # backup:
+  #   retentionPolicy: 30d
+  #   barmanObjectStore: &barmanObjectStore
+  #     wal:
+  #       compression: bzip2
+  #       maxParallel: 8
+  #     data:
+  #       compression: bzip2
+  #     destinationPath: s3://postgresql/
+  #     endpointURL: https://${SECRET_MINIO_URL}:9443
+  #     serverName: postgres16-v2
+  #     s3Credentials:
+  #       accessKeyId:
+  #         name: postgres-minio
+  #         key: MINIO_ACCESS_KEY
+  #       secretAccessKey:
+  #         name: postgres-minio
+  #         key: MINIO_SECRET_KEY
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                  - amd64
+      # muspelheim's etcd WAL sits on a DRAM-less Crucial BX500 sharing one LVM
+      # VG with the Longhorn replica store, so sustained writes from co-resident
+      # pods show up as etcd commit stalls. Postgres is the heaviest writer in
+      # the cluster — keep new instances off that node.
+      #
+      # Soft, not required: `storage.storageClass` is local-path, so each
+      # instance's PV carries its own `kubernetes.io/hostname` affinity. A
+      # required rule would leave the muspelheim instance (postgres-15)
+      # permanently Pending, since the scheduler could satisfy neither the PV's
+      # pin nor this rule. Soft keeps it running and steers the NEXT instance
+      # cnpg creates; postgres-15 itself only relocates when its PVC is
+      # recreated (cnpg replica re-bootstrap), not on a plain restart.
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                  - muspelheim
+  # Note: previousCluster needs to be set to the name of the previous
+  # cluster when recovering from an existing cnpg cluster
+  # bootstrap:
+  #   recovery:
+  #     source: &previousCluster postgres16-v1
+  # Note: externalClusters is needed when recovering from an existing cnpg cluster
+  # externalClusters:
+  #   - name: *previousCluster
+  #     barmanObjectStore:
+  #       <<: *barmanObjectStore
+  #       serverName: *previousCluster

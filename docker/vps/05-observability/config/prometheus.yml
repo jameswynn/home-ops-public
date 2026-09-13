@@ -1,0 +1,76 @@
+---
+# prometheus-agent scrape config for the VPS. Agent mode: these targets are scraped here
+# and forwarded to the cluster Prometheus by remote_write; nothing is stored or queryable
+# locally. Query it all in the cluster Grafana, filtered on `instance="heimdall"`.
+global:
+  scrape_interval: 60s
+  scrape_timeout: 10s
+  external_labels:
+    location: ovh
+
+scrape_configs:
+  # Every job pins instance=heimdall rather than letting it default to the target's
+  # host:port. There is one machine here, and `job` already says which exporter a series
+  # came from — so `{instance="heimdall"}` selects the whole VPS, which is what any
+  # dashboard or alert actually wants. Prometheus only defaults `instance` when it is
+  # not already set, so declaring it in static_configs is enough.
+  - job_name: vps-node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          instance: heimdall
+
+  - job_name: vps-crowdsec
+    static_configs:
+      - targets: ["crowdsec:6060"]
+        labels:
+          instance: heimdall
+
+  # The towonel node exposes two separate listeners: hub (control plane, invites, agent
+  # sessions) and edge (the public :4443 terminator). Neither is declared in the hub's
+  # compose `ports:` — they are reachable across the shared `edge` network only.
+  - job_name: vps-towonel-hub
+    static_configs:
+      - targets: ["towonel-hub:9091"]
+        labels:
+          instance: heimdall
+
+  - job_name: vps-towonel-edge
+    static_configs:
+      - targets: ["towonel-hub:9092"]
+        labels:
+          instance: heimdall
+
+  - job_name: vps-fluent-bit
+    metrics_path: /api/v1/metrics/prometheus
+    static_configs:
+      - targets: ["fluent-bit:2020"]
+        labels:
+          instance: heimdall
+
+  # Self-scrape. `prometheus_remote_storage_*` here is the only place a broken push to
+  # the cluster shows up — if remote_write itself is failing, the failure cannot be
+  # observed from the cluster side, so alert on staleness of these series, not absence.
+  - job_name: vps-prometheus-agent
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+        labels:
+          instance: heimdall
+
+# doco-cd (:9120) is deliberately absent: it binds to 127.0.0.1 on the host and sits on
+# its own bridge, not `edge`, so nothing in this stack can reach it. Scraping it would
+# mean editing the bootstrap stack, which doco-cd cannot redeploy itself — a manual VPS
+# step. Not worth it for deploy-loop counters.
+
+remote_write:
+  - name: cluster
+    url: http://prometheus:9090/api/v1/write
+    # The receiver is unauthenticated and tailnet-only (forgejo #961). It is not yet
+    # ACL-scoped to this host — see forgejo #1333.
+    remote_timeout: 30s
+    queue_config:
+      # Defaults sized for a large cluster; this is one small VPS pushing a few thousand
+      # series, so a single shard is plenty and keeps the memory floor low.
+      max_shards: 5
+      capacity: 2500
+      max_samples_per_send: 500

@@ -1,0 +1,23 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/keda.sh/scaledobject_v1alpha1.json
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: ${DB_SCALAR_TARGET:=${APP}}-db
+spec:
+  advanced:
+    restoreToOriginalReplicaCount: true
+  cooldownPeriod: 0
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: ${DB_SCALAR_CONTROLLER:=Deployment}
+    name: ${DB_SCALAR_TARGET:=${APP}}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-operated.monitoring.svc.cluster.local:9090
+        query: sum(cnpg_collector_up{cluster="${DB_SCALAR_CLUSTER_NAME:=postgres}"})
+        threshold: "4"
+        ignoreNullValues: "0"

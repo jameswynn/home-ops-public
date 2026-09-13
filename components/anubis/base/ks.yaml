@@ -1,0 +1,32 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: ${APP}-anubis
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: &app ${APP}
+  interval: 1h
+  path: ./components/anubis/base/anubis
+  postBuild:
+    substitute:
+      APP: *app
+      APP_NAMESPACE: ${APP_NAMESPACE}
+      ANUBIS_TARGET: ${ANUBIS_TARGET}
+      ANUBIS_DIFFICULTY: "${ANUBIS_DIFFICULTY:=\"4\"}"
+      ANUBIS_MEM_LIMIT: "${ANUBIS_MEM_LIMIT:=\"256Mi\"}"
+      # Anubis matches these exactly, so the glob is load-bearing: a bare root
+      # domain would not match app.example.com. Override for apps served on a
+      # hostname outside the root domain.
+      ANUBIS_REDIRECT_DOMAINS: "${ANUBIS_REDIRECT_DOMAINS:=\"${SECRET_ROOT_DOMAIN},*.${SECRET_ROOT_DOMAIN}\"}"
+  prune: true
+  retryInterval: 2m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: ${APP_NAMESPACE}
+  timeout: 5m
+  wait: false

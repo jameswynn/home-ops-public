@@ -1,0 +1,29 @@
+---
+# Headless-style Service with no selector — a stable in-cluster name/port
+# that the HTTPRoute targets. Backed by the EndpointSlice below, which
+# pins the off-cluster Hermes dashboard host.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes
+spec:
+  ports:
+    - name: http
+      port: 9119
+      targetPort: 9119
+---
+# Manually-managed endpoints pointing at the off-cluster Hermes host.
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: hermes
+  labels:
+    kubernetes.io/service-name: hermes
+addressType: IPv4
+ports:
+  - name: http
+    port: 9119
+    protocol: TCP
+endpoints:
+  - addresses:
+      - 10.10.2.22

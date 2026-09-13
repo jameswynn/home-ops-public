@@ -1,0 +1,18 @@
+---
+timezone: America/Chicago
+
+public_ssh_keys:
+  - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDStn1FfMQElBoudPzbQD+ppLn+2guhbOvr4NJ0TuIl1YOT03f/qSVHl6K3oE2OwWpHOpvIDvPvFhzXDHnJQ6f/x5KDDYjjM4MKkTvu0YOcRHgWDWSVZhsI9CVgl40ZAnSXWYqkxuNo/x2yefFrzZaloI1geuZEVtmkKgzorDExp8GsGWGRFTn5bIYR5SfSsHGD7kmLtKIXDQ1UtxeasQ1sJrxcUnuJ0SEyjxU9T37ZgGfkzHif0cAQR2dOxJJ3JrtA54vbVm8RVdy5Oal0BHA6SlWm/kKStapG1nelRUgTlgFhXHt84IoVWNbwjaZzwkDlH8DrOgq+qjUwr4R4GudB wynnj@vizier"
+
+packages:
+  - hdparm
+  - htop
+  - lm-sensors
+  - vim
+  - unattended-upgrades
+  - chrony
+  - cifs-utils
+  - nfs-common
+  - open-iscsi
+  - iputils-ping
+  - vlan

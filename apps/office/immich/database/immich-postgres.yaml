@@ -1,0 +1,105 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/postgresql.cnpg.io/cluster_v1.json
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: immich-postgres
+  namespace: office
+spec:
+  instances: 3
+  # imageName: ghcr.io/tensorchord/cloudnative-pgvecto.rs:16.2-v0.2.1
+  # imageName: ghcr.io/corentingiraud/cnpg-pgvector-vectorchord:16-migration
+  imageName: ghcr.io/tensorchord/cloudnative-vectorchord:16-0.3.0
+  primaryUpdateStrategy: unsupervised
+  nodeMaintenanceWindow:
+    inProgress: true
+    reusePVC: true
+  storage:
+    size: 5Gi
+    storageClass: local-path
+  enableSuperuserAccess: true
+  superuserSecret:
+    name: immich-postgres-superuser
+  resources:
+    requests:
+      cpu: 10m
+      ephemeral-storage: 200Mi
+    limits:
+      ephemeral-storage: 200Mi
+  postgresql:
+    # enabling this to allow manually changing the primary_slot_name
+    enableAlterSystem: true
+    shared_preload_libraries:
+      # - "vectors.so"
+      - "vchord.so"
+    parameters:
+      max_connections: "600"
+      max_slot_wal_keep_size: 10GB
+      shared_buffers: 512MB
+  monitoring:
+    enablePodMonitor: true
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: immich-postgres
+  # backup:
+  #   retentionPolicy: 30d
+  #   barmanObjectStore: &barmanObjectStore
+  #     wal:
+  #       compression: bzip2
+  #       maxParallel: 8
+  #     data:
+  #       compression: bzip2
+  #     destinationPath: s3://postgresql/
+  #     endpointURL: https://${SECRET_MINIO_URL}:9443
+  #     serverName: immich-postgres-v1
+  #     s3Credentials:
+  #       accessKeyId:
+  #         name: immich-postgres-minio
+  #         key: minio_access_key
+  #       secretAccessKey:
+  #         name: immich-postgres-minio
+  #         key: minio_secret_key
+  # Note: previousCluster needs to be set to the name of the previous
+  # cluster when recovering from an existing cnpg cluster
+  # bootstrap:
+  #   initdb:
+  #     database: immich
+  #     owner: immich
+  #     secret:
+  #       name: immich-postgres
+  #     postInitSQL:
+  #       - CREATE EXTENSION cube
+  #       - CREATE EXTENSION earthdistance
+  #       - CREATE EXTENSION vectors
+  #       - CREATE EXTENSION IF NOT EXISTS vchord CASCADE;
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                  - amd64
+
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/postgresql.cnpg.io/scheduledbackup_v1.json
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: postgres-immich
+  namespace: office
+spec:
+  schedule: "@daily"
+  immediate: true
+  backupOwnerReference: self
+  cluster:
+    name: immich-postgres
+  # The cluster archives via the barman-cloud plugin and has no spec.backup
+  # section. Without these, method defaults to barmanObjectStore and every
+  # run fails with "cluster has no backup section".
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

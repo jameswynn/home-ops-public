@@ -1,0 +1,15 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: k8s-schemas
+spec:
+  clusterRef:
+    name: garage-cluster
+    namespace: default
+  quotas:
+    maxSize: 1Gi
+  website:
+    enabled: true
+  globalAlias: k8s-schemas.wynning.tech

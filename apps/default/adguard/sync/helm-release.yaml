@@ -1,0 +1,100 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app adguard-sync
+  namespace: default
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 3
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  valuesFrom:
+    - targetPath: controllers.main.containers.main.env.ORIGIN_URL
+      kind: Secret
+      name: adguard-sync
+      valuesKey: ORIGIN_URL
+    - targetPath: controllers.main.containers.main.env.ORIGIN_USERNAME
+      kind: Secret
+      name: adguard-sync
+      valuesKey: USERNAME
+    - targetPath: controllers.main.containers.main.env.ORIGIN_PASSWORD
+      kind: Secret
+      name: adguard-sync
+      valuesKey: PASSWORD
+    - targetPath: controllers.main.containers.main.env.REPLICA1_USERNAME
+      kind: Secret
+      name: adguard-sync
+      valuesKey: USERNAME
+    - targetPath: controllers.main.containers.main.env.REPLICA1_PASSWORD
+      kind: Secret
+      name: adguard-sync
+      valuesKey: PASSWORD
+    - targetPath: controllers.main.containers.main.env.REPLICA1_URL
+      kind: Secret
+      name: adguard-sync
+      valuesKey: REPLICA1_URL
+  values:
+    controllers:
+      main:
+        annotations:
+          secret.reloader.stakater.com/reload: *app
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: "OnRootMismatch"
+            runAsNonRoot: true
+        containers:
+          main:
+            image:
+              repository: ghcr.io/bakito/adguardhome-sync
+              tag: v0.9.2
+
+            args: [ "run" ]
+
+            env:
+              PUID: 1000
+              GUID: 1000
+              TZ: "${CLUSTER_TZ}"
+              API_PORT: '0'
+              CRON: '*/10 * * * *'
+
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: { drop: [ "ALL" ] }
+
+            # CPU from 7d of Prometheus data: p50 0m, p95 0.1m, max 0.6m (the
+            # max is one of the */10 sync runs). 25m is the practical request
+            # floor. No CPU limit, per the cluster convention.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 30Mi
+                ephemeral-storage: 10Mi
+              limits:
+                memory: 100Mi
+                ephemeral-storage: 20Mi
+
+    service:
+      main:
+        controller: main
+        enabled: false
+        ports:
+          http:
+            enabled: false
+            port: 8080

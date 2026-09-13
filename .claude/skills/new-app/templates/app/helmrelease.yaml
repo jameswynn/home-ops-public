@@ -1,0 +1,77 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app __APP__
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 3
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    controllers:
+      main:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        # __INIT_CONTAINERS_BLOCK__
+        containers:
+          main:
+            # TODO: replace with the real image for this app
+            image:
+              repository: ghcr.io/CHANGE-ME/__APP__
+              tag: "0.0.0"
+            env:
+              TIMEZONE: ${CLUSTER_TZ}
+              # TODO: verify the listen port matches what the upstream image uses
+              APP_PORT: &port 3000
+              APP_URL: https://${APP}.${SECRET_INTERNAL_DOMAIN}
+              # __DRAGONFLY_ENV_BLOCK__
+            # __ENVFROM_BLOCK__
+            resources:
+              requests:
+                # TODO: replace this floor with the app's observed p95 CPU once it
+                # has run for a while. Do NOT add a CPU limit.
+                cpu: 25m
+                ephemeral-storage: 100Mi
+              limits:
+                # TODO: size to the app's real ceiling; this is also the request
+                # (k8s defaults request to limit).
+                memory: 512Mi
+                ephemeral-storage: 500Mi
+    service:
+      main:
+        controller: main
+        ports:
+          http:
+            port: *port
+
+    route:
+      app:
+        # TODO: update homepage metadata (description, icon, weight) for this app
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "__APP__"
+          gethomepage.dev/description: "TODO short description"
+          gethomepage.dev/group: "Applications"
+          gethomepage.dev/icon: "TODO-icon.svg"
+          gethomepage.dev/weight: "100"
+        hostnames:
+          - "${APP}.__ROUTE_DOMAIN__"
+        parentRefs:
+          - name: __ROUTE_PARENT__
+            namespace: networking
+            # __ROUTE_RULES_BLOCK__
+
+    # __PERSISTENCE_BLOCK__

@@ -1,0 +1,22 @@
+---
+# SSH auth from rsyslog's auth.log, feeding the crowdsecurity/sshd collection.
+#
+# Deliberately NOT `source: journalctl`, which is what this was originally. The crowdsec
+# engine image ships no journalctl binary, so that acquisition failed at every startup:
+#
+#   datasource of type journalctl: datasource 'journalctl' is not available:
+#   exec: "journalctl": executable file not found in $PATH
+#
+# That error is non-fatal — the engine carries on loading everything else — so the sshd
+# collection was live but receiving no input, and brute-force detection silently never
+# ran. The stack already bind-mounts /var/log read-only, and this host runs rsyslog, so
+# read the file directly instead.
+#
+# If auth.log ever disappears (a journald-only host — recent Ubuntu without rsyslog),
+# this goes quiet the same way. `cscli metrics` should show a non-zero read count for
+# /var/log/auth.log; if it is zero or missing, check the file still exists.
+source: file
+filenames:
+  - /var/log/auth.log
+labels:
+  type: syslog

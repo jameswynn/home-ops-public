@@ -1,0 +1,49 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: yubal-namespace-policy
+  namespace: &namespace yubal
+spec:
+  endpointSelector: {}
+  ingress:
+    # Allow ingress from envoy-gateway in the networking namespace.
+    # TODO: tighten gateway.networking.k8s.io/gateway-name match if you want to scope
+    # this to only envoy-internal or only envoy-towonel rather than both.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Allow intra-namespace traffic (pod-to-pod within this namespace)
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": *namespace
+
+  # TODO: if Prometheus needs to scrape this namespace, uncomment:
+  # - fromEndpoints:
+  #     - matchLabels:
+  #         app.kubernetes.io/name: prometheus
+  #         "k8s:io.kubernetes.pod.namespace": monitoring
+
+  egress:
+    # Allow intra-namespace traffic
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": *namespace
+
+    # Allow DNS
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    - toEntities:
+        - world

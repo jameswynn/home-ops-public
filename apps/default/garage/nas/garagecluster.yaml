@@ -1,0 +1,32 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagecluster_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageCluster
+metadata:
+  name: garage-nas
+spec:
+  replicas: 1
+  zone: garage
+  gateway: true
+  replication:
+    factor: 1
+  imageRepository: mirror.gcr.io/dxflrs
+  connectTo:
+    rpcSecretRef:
+      name: garage-nas
+      key: GARAGE_RPC_SECRET
+    bootstrapPeers:
+      - "f06c429d7558b7fddf64b1c24ad6f6467eeceb6ef8841685922142216190cf1b@192.168.1.3:3901"
+    adminApiEndpoint: "https://s3-admin.core.wynning.tech"
+    adminTokenSecretRef:
+      name: garage-nas
+      key: GARAGE_ADMIN_TOKEN
+  admin:
+    adminTokenSecretRef:
+      name: garage-nas
+      key: GARAGE_ADMIN_TOKEN
+  publicEndpoint:
+    type: LoadBalancer
+    loadBalancer:
+      annotations:
+        lbipam.cilium.io/ips: "${SVC_GARAGE_NAS_GATEWAY_ADDR}"

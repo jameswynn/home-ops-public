@@ -1,0 +1,288 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/prometheusrule_v1.json
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: node-maintenance
+  namespace: kube-system
+spec:
+  groups:
+    # Longhorn-aware planned node maintenance — the observability half of #1508,
+    # tracked as #1709. #1508 is about the *gate*: kured's `concurrency: 1` only
+    # serializes reboot *initiation*, so the next node can be drained while the
+    # previous one's replicas are still rebuilding, which is how the 2026-08-20
+    # window ended with ~49 degraded volumes. Nothing here implements that gate —
+    # these rules watch the inputs it will need, and until it exists they are the
+    # only thing that says a maintenance window went wrong. The runbook
+    # (troubleshooting.md#longhorn-aware-planned-node-maintenance) writes the
+    # recovery-gate checklist out in full, including how kured's own
+    # --alert-filter-regexp can consume these alert names as the gate.
+    #
+    # What a normal kured cycle looks like here, measured over the 13d of history
+    # Prometheus retains (window 02:00-05:00 America/Chicago = 07:00-10:00 UTC,
+    # one node per hour, drainTimeout 900s + forceReboot):
+    #
+    #   - cordon -> drain -> force-reboot -> uncordon takes ~15-20m per node. The
+    #     drain always hits the timeout, because the longhorn-system
+    #     instance-manager is a singleton with a minAvailable: 1 PDB and can
+    #     never be evicted. That is #1508's finding, not something to alert on.
+    #   - one rebooted node degrades 20-55 of the 105 volumes while replicas
+    #     reattach, and it clears within 25m. Four such events in the window
+    #     (09-05, 09-06, 09-07, 09-10); every one recovered unaided.
+    #
+    # So every threshold below sits *above* an ordinary cycle rather than at it.
+    # Each expression was replayed against the retained 13d and fires zero times
+    # on the routine reboots; what is left is the abnormal case — a cycle that
+    # does not finish, or a second node taken down on top of the first one's
+    # rebuild.
+    #
+    # Two notes on the metrics, because the obvious signals are not all real:
+    #
+    #   - `evictionRequested` (the nodes.longhorn.io spec field a Longhorn-aware
+    #     workflow would set) is *not exported*. Longhorn publishes node
+    #     conditions, not spec fields, and kube-state-metrics' custom-resource
+    #     support is configured here only for toolhive's VirtualMCPServer CRD.
+    #     The closest honest proxy is the allowScheduling condition, which an
+    #     eviction request implies — Longhorn requires scheduling off on the node
+    #     first. See LonghornNodeSchedulingDisabledTooLong.
+    #   - `longhorn_volume_robustness` on 1.11 is a *state-labelled 0/1* series
+    #     (105 volumes x 4 states = 420 series, exactly one of each set to 1),
+    #     not the old numeric 1/2/3 encoding. Hence the {state="degraded"} == 1
+    #     form used below.
+    #
+    # `node_boot_time_seconds` is filtered to job="node-exporter" throughout:
+    # heimdall (the OVH VPS, job="vps-node") also exports it, and it is not a
+    # cluster node, not Flux-managed, and not part of any maintenance window.
+    - name: node-maintenance.rules
+      rules:
+        # A drain/reboot cycle that is not finishing. The cordon is the whole
+        # cycle's envelope — kured cordons before draining and uncordons once the
+        # node is back — so cordon duration is the cheapest measure of "is
+        # maintenance still in progress", and it needs no metric kured does not
+        # already export.
+        #
+        # The instance-manager clause is what makes this Longhorn-aware rather
+        # than a generic cordon watchdog. Matching created_by_kind="InstanceManager"
+        # (not a pod-name regex, which changes with every instance-manager hash)
+        # says the node still holds live replica engines: cordoned *and* still
+        # storage-resident is the deadlock #1508 describes — replicas can neither
+        # be rebuilt onto it nor evacuated off it.
+        #
+        # 30m against a measured 15-20m cycle: the three cordons in the retained
+        # window ran 15m, 15m and ~5m, so this fires on none of them.
+        - alert: NodeMaintenanceDrainStalled
+          annotations:
+            summary: >-
+              Node {{ $labels.node }} has been cordoned for over 30m with its Longhorn instance-manager still resident.
+            description: >-
+              A kured cycle cordons, drains for at most 900s, force-reboots and
+              uncordons — about 15-20m end to end. Past 30m the cycle is not
+              completing: the node did not come back from the reboot, kured never
+              got to uncordon it, or it was cordoned by hand and left. While it
+              stays cordoned no replica can be rebuilt back onto it, so every
+              volume with a replica here stays degraded and the next window makes
+              it worse. Check `kubectl -n kube-system logs -l
+              app.kubernetes.io/name=kured --tail=100` for the drain it is stuck
+              on, then uncordon once the node is genuinely back.
+            runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#nodemaintenancedrainstalled
+          expr: |
+            (max by (node) (kube_node_spec_unschedulable) == 1)
+            and on (node)
+            (max by (node) (kube_pod_info{namespace="longhorn-system", created_by_kind="InstanceManager"}) == 1)
+          for: 30m
+          labels:
+            severity: warning
+
+        # Longhorn scheduling left switched off on a node. This is the only
+        # exported signal for the evacuation half of a Longhorn-aware maintenance
+        # workflow: evictionRequested has no metric, but it requires
+        # allowScheduling: false, so a node sitting here is either mid-evacuation
+        # or wearing the leftovers of an abandoned one.
+        #
+        # Either way the cluster is quietly running against a smaller replica
+        # target than it thinks: replica-soft-anti-affinity=false means Longhorn
+        # will not double up replicas on the remaining nodes, so anything
+        # degraded stays degraded until scheduling comes back. No other alert
+        # sees that, which is the reason for this one.
+        #
+        # Aggregated with `max by (node)` so the longhorn-manager pod that
+        # exports a given node's status can be rescheduled without the label
+        # change resetting the 2h timer. 2h is long enough for a deliberate
+        # evacuation to finish or be reverted; the condition was never once 0 in
+        # the retained window, so this fires zero times on normal operation.
+        - alert: LonghornNodeSchedulingDisabledTooLong
+          annotations:
+            summary: >-
+              Longhorn scheduling has been disabled on node {{ $labels.node }} for over 2h.
+            description: >-
+              Longhorn will not place or rebuild replicas on this node, so the
+              cluster is one replica target short without saying so anywhere else.
+              This is the state a node evacuation leaves behind, and the closest
+              exported proxy for evictionRequested, which is a spec field with no
+              metric. Read the spec with `kubectl -n longhorn-system get
+              nodes.longhorn.io {{ $labels.node }} -o jsonpath='{.spec}'` — if
+              evictionRequested is true the evacuation is still running and the
+              question is why it has not finished; if it is false, scheduling was
+              turned off by hand and never turned back on. Either way, resolve it
+              before the next maintenance window.
+            runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#longhornnodeschedulingdisabledtoolong
+          expr: |
+            max by (node) (longhorn_node_status{condition="allowScheduling"}) == 0
+          for: 2h
+          labels:
+            severity: warning
+
+        # Volumes still degraded long after the reboot that degraded them: the
+        # recovery gate of #1508 expressed as an alert. If replicas have not
+        # caught up, the next node must not be taken down.
+        #
+        # The changes(node_boot_time_seconds[2h]) clause is the load-bearing part
+        # and is what separates a controlled maintenance recovery from an
+        # unrelated volume incident. Measured on the retained 13d: scoped to the
+        # 2h after a reboot, degraded volumes clear within 25m and this rule
+        # fires zero times. The *same* threshold without the reboot clause fires
+        # on 2026-09-01 11:57 for 125m — a bulk snapshot/backup event with no node
+        # maintenance anywhere near it, which is exactly the false positive the
+        # scoping exists to avoid.
+        #
+        # 40m therefore means recovery has already overrun the observed worst
+        # case, with roughly 20 minutes to act before kured's period: 1h0m0s
+        # allows it to take the next node.
+        - alert: LonghornMaintenanceRecoveryStalled
+          annotations:
+            summary: >-
+              {{ $value }} Longhorn volume(s) have been degraded for 40m following a planned node reboot.
+            description: >-
+              Replica rebuilds after a maintenance reboot normally finish within
+              25 minutes; these have not. kured does not wait for Longhorn and may
+              take the next node within the hour, so close the window rather than
+              let a second node drain on top of an unfinished rebuild — take the
+              lock by hand with `kubectl -n kube-system annotate ds kured
+              weave.works/kured-node-lock='{"nodeID":"manual"}' --overwrite`, and
+              release it afterwards with the same key and a trailing dash. Then
+              find what is not progressing: longhorn_engine_rebuild_progress for
+              rebuilds that have stalled mid-percentage, and the longhorn-manager
+              logs for FailedRebuilding, FailedStartingSnapshotPurge, or "replica
+              is not in mode WO".
+            runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#longhornmaintenancerecoverystalled
+          expr: |
+            (count(longhorn_volume_robustness{state="degraded"} == 1) > 0)
+            and on ()
+            (count(changes(node_boot_time_seconds{job="node-exporter"}[2h]) > 0) > 0)
+          for: 40m
+          labels:
+            severity: warning
+
+        # The gate violation itself: a second node rebooted while volumes from the
+        # first were still degraded. concurrency: 1 permits this, because it
+        # serializes reboot initiation and not recovery, and a run of these is how
+        # 2026-08-20 turned four sequential reboots into a cluster-wide rebuild
+        # storm.
+        #
+        # Fired once in the retained 13d — 2026-09-05 08:04, nidavellir and
+        # muspelheim rebooting 22 minutes apart with rebuilds in flight. That is a
+        # true positive for the pattern (it happened to recover) and the one event
+        # in the window that #1508's gate would have prevented.
+        #
+        # `for: 10m` rather than on a single sample: both reboots have to still be
+        # inside the 1h window for the count to exceed 1, so a brief overlap at
+        # the edge of the window is not worth waking up for.
+        #
+        # Two *unplanned* reboots in an hour also land here. That is deliberate —
+        # the consequence for Longhorn is identical and worse, and the cordon
+        # history (or its absence) tells the two apart in seconds.
+        - alert: NodeMaintenanceRebootOverlappedRecovery
+          annotations:
+            summary: >-
+              {{ $value }} nodes rebooted within the last hour while Longhorn volumes were still degraded.
+            description: >-
+              A node was rebooted on top of another node's unfinished replica
+              rebuild. Nothing upstream of this alert waits for Longhorn, and each
+              overlapping reboot multiplies the rebuild queue against
+              concurrent-replica-rebuild-per-node-limit=3. Close the window before
+              a third node goes (hold the kured lock, see the runbook) and let the
+              rebuilds drain. Check `max_over_time(kube_node_spec_unschedulable[1h])`
+              to confirm these were planned drains — if the nodes were never
+              cordoned this is not maintenance at all but nodes crashing, and the
+              reboot cause is the thing to chase.
+            runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#nodemaintenancerebootoverlappedrecovery
+          expr: |
+            (count(changes(node_boot_time_seconds{job="node-exporter"}[1h]) > 0) > 1)
+            and on ()
+            (count(longhorn_volume_robustness{state="degraded"} == 1) > 0)
+          for: 10m
+          labels:
+            severity: warning
+
+        # The OS came back but Longhorn did not. The Kubernetes-Ready clause is
+        # what makes this a *recovery* signal instead of a duplicate of
+        # LonghornNodeDown (core/longhorn-system): a node that is down is down and
+        # is already covered, whereas a node the kubelet calls Ready while
+        # Longhorn calls it not-ready is a node whose instance-manager, kernel
+        # modules or mount propagation did not survive the reboot. Every replica
+        # on it is unusable and nothing else says so.
+        #
+        # `min by (node)` collapses the condition_reason label, which Longhorn
+        # rewrites as the reason changes and which would otherwise leave two
+        # series for one node mid-transition.
+        #
+        # 15m: the single occurrence in the retained window (nidavellir,
+        # condition_reason="KubernetesNodePressure") was shorter than that, so
+        # this fires zero times on it. Transient pressure is not the target.
+        - alert: LonghornNodeUnhealthyWhileNodeReady
+          annotations:
+            summary: >-
+              Longhorn reports node {{ $labels.node }} not ready for 15m while Kubernetes reports it Ready.
+            description: >-
+              The node is up and scheduling pods, but Longhorn cannot use it —
+              after a maintenance reboot this usually means the instance-manager
+              did not come back, or a node condition (kernel modules, multipathd,
+              mount propagation, disk pressure) is failing. Every replica on this
+              node counts as lost until it clears, so further node maintenance is
+              unsafe while it is firing. Get the reason with `kubectl -n
+              longhorn-system get nodes.longhorn.io {{ $labels.node }} -o
+              jsonpath='{.status.conditions}'`, then look at the instance-manager
+              pod on that node.
+            runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#longhornnodeunhealthywhilenodeready
+          expr: |
+            (min by (node) (longhorn_node_status{condition="ready"}) == 0)
+            and on (node)
+            (kube_node_status_condition{condition="Ready", status="true"} == 1)
+          for: 15m
+          labels:
+            severity: warning
+
+        # A reboot that is never happening. Normally kured_reboot_required goes 1
+        # when unattended-upgrades lands (~11:30-12:15 UTC) and clears in the next
+        # morning's window — 19-20h in all five cases in the retained history.
+        # Past 36h the node has sat through two whole windows unrebooted, which
+        # means the cluster-wide kured lock is stranded, kured is not running, or
+        # (once #1508 lands) the Longhorn recovery gate has been holding the
+        # window shut long enough that it is now the problem rather than the
+        # protection.
+        #
+        # `max by (node)` so a kured pod restart, which changes `pod` and
+        # `instance`, does not reset a 36h `for` timer. The timer itself survives
+        # a Prometheus restart via ALERTS_FOR_STATE as long as the outage stays
+        # inside the 1h default tolerance.
+        - alert: KuredRebootPendingTooLong
+          annotations:
+            summary: >-
+              Node {{ $labels.node }} has needed a reboot for over 36h.
+            description: >-
+              kured flags a node within hours of a kernel or package upgrade and
+              reboots it in the next 02:00-05:00 window, so a flag this old means
+              two windows have passed with nothing happening. Either the lock
+              annotation is stranded on a node that never finished its cycle
+              (`kubectl -n kube-system get ds kured -o
+              jsonpath='{.metadata.annotations}'`), or kured itself is not
+              running. A node left on an old kernel with new userland is its own
+              failure mode; this is not a reason to force a reboot outside the
+              window, but it is a reason to find out why the window is not doing
+              its job.
+            runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#kuredrebootpendingtoolong
+          expr: |
+            max by (node) (kured_reboot_required) == 1
+          for: 36h
+          labels:
+            severity: warning

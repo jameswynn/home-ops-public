@@ -1,0 +1,16 @@
+---
+id: googlechat
+url: http://mautrix-googlechat.comms.svc.cluster.local:29320
+as_token: "{{ .MAUTRIX_GOOGLECHAT_AS_TOKEN }}"
+hs_token: "{{ .MAUTRIX_GOOGLECHAT_HS_TOKEN }}"
+sender_localpart: "{{ .MAUTRIX_GOOGLECHAT_SENDER_LOCALPART }}"
+rate_limited: false
+namespaces:
+  users:
+    - exclusive: true
+      regex: '@gc_.*:wynning\.tech'
+    - exclusive: true
+      regex: '@googlechatbot:wynning\.tech'
+  aliases: []
+de.sorunome.msc2409.push_ephemeral: true
+push_ephemeral: true

@@ -1,0 +1,18 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/tailscale.com/proxyclass_v1alpha1.json
+apiVersion: tailscale.com/v1alpha1
+kind: ProxyClass
+metadata:
+  name: default
+spec:
+  # Operator-created proxies default to a 1m CPU request while every one of them
+  # sits at ~16-23m steady state, so the scheduler treats them as free. Wired up
+  # as proxyConfig.defaultProxyClass in the operator HelmRelease so it applies to
+  # every Service/Ingress proxy without per-resource opt-in. defaultProxyClass
+  # does NOT cover Connectors, so connector.yaml references this class directly.
+  statefulSet:
+    pod:
+      tailscaleContainer:
+        resources:
+          requests:
+            cpu: 15m

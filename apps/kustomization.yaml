@@ -1,0 +1,39 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - actual
+  - ai
+  - anubis
+  - argo
+  - authentik
+  - carol
+  - comms
+  - crd-schema-publisher
+  - database
+  - default
+  - dev
+  # - falco
+  - fmd
+  - garage-web
+  - ghostfolio
+  - home
+  - ideon
+  - jellyfin
+  - kittygram
+  # - kguardian
+  - minecraft
+  - ntfy
+  - office
+  - paperless
+  - plausible
+  - renovate
+  - searxng
+  - simple-todo
+  - sneaker
+  # - streamystats
+  - tailscale
+  - trivy
+  - unifi
+  - vaultwarden
+  - yubal

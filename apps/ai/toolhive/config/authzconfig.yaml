@@ -1,0 +1,646 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpauthzconfig_v1beta1.json
+# Cedar deny-by-default: only explicitly permitted (group, tool) pairs are callable.
+# Tool names are the VirtualMCPServer-prefixed forms: {backend-name}_{tool-name}.
+# Run `tools/list` on the unified endpoint after each new backend is deployed to
+# confirm exact names, then add or correct permits below.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPAuthzConfig
+metadata:
+  name: toolhive-authz
+spec:
+  type: cedarv1
+  config:
+    # Authentik includes group names in the "groups" claim via the default groups scope.
+    # Ensure the ToolHive Authentik provider requests the "groups" scope and that the
+    # groups property mapping is enabled. See OIDC.md for Authentik prerequisites.
+    group_claim_name: "groups"
+    policies:
+      # -------------------------------------------------------------------------
+      # toolhive-basic (Zug): SearXNG + memini-zug
+      # memini tool names: from eleboucher/memini docs/reference/mcp-tools.md and
+      # internal/api/mcp/mcp.go (9 mcpsdk.AddTool calls — HIGH confidence).
+      # memory_answer is registered only when MEMINI_LLM_BASE_URL is set;
+      # not set in this deployment, so the permit is dormant but harmless.
+      # ToolHive prefix: MCPServerEntry name "memini-zug" → "memini-zug_" prefix.
+      # Verify exact names with `tools/list` after deploy (see OIDC.md).
+      # -------------------------------------------------------------------------
+      - |
+        permit(
+          principal in THVGroup::"toolhive-basic",
+          action == Action::"call_tool",
+          resource is Tool
+        ) when {
+          resource == Tool::"searxng_web_search" ||
+          resource == Tool::"memini-zug_memory_briefing" ||
+          resource == Tool::"memini-zug_memory_recall" ||
+          resource == Tool::"memini-zug_memory_remember" ||
+          resource == Tool::"memini-zug_memory_answer" ||
+          resource == Tool::"memini-zug_memory_list" ||
+          resource == Tool::"memini-zug_memory_get" ||
+          resource == Tool::"memini-zug_memory_history" ||
+          resource == Tool::"memini-zug_memory_update" ||
+          resource == Tool::"memini-zug_memory_forget"
+        };
+
+      # -------------------------------------------------------------------------
+      # toolhive-accountant (Anton): SearXNG + Ghostfolio + memini-anton
+      # Ghostfolio tool names are from ghcr.io/mhajder/ghostfolio-mcp v1.6.0 —
+      # verify with `tools/list` after deployment and update as needed.
+      # Actual Budget is write-capable by design for Anton's accountant profile.
+      # The MCPServer name is prefixed by the VMCP, yielding actualbudget_actual_*.
+      - |
+        permit(
+          principal in THVGroup::"toolhive-accountant",
+          action == Action::"call_tool",
+          resource is Tool
+        ) when {
+          resource == Tool::"searxng_web_search" ||
+          resource == Tool::"ghostfolio_get_portfolio_performance" ||
+          resource == Tool::"ghostfolio_get_holdings" ||
+          resource == Tool::"ghostfolio_get_accounts" ||
+          resource == Tool::"ghostfolio_get_transactions" ||
+          resource == Tool::"ghostfolio_get_portfolio" ||
+          resource == Tool::"memini-anton_memory_briefing" ||
+          resource == Tool::"memini-anton_memory_recall" ||
+          resource == Tool::"memini-anton_memory_remember" ||
+          resource == Tool::"memini-anton_memory_answer" ||
+          resource == Tool::"memini-anton_memory_list" ||
+          resource == Tool::"memini-anton_memory_get" ||
+          resource == Tool::"memini-anton_memory_history" ||
+          resource == Tool::"memini-anton_memory_update" ||
+          resource == Tool::"memini-anton_memory_forget" ||
+          resource == Tool::"actualbudget_actual_accounts_close" ||
+          resource == Tool::"actualbudget_actual_accounts_create" ||
+          resource == Tool::"actualbudget_actual_accounts_delete" ||
+          resource == Tool::"actualbudget_actual_accounts_get_balance" ||
+          resource == Tool::"actualbudget_actual_accounts_list" ||
+          resource == Tool::"actualbudget_actual_accounts_reopen" ||
+          resource == Tool::"actualbudget_actual_accounts_update" ||
+          resource == Tool::"actualbudget_actual_bank_sync" ||
+          resource == Tool::"actualbudget_actual_budgets_get_all" ||
+          resource == Tool::"actualbudget_actual_budgets_list_available" ||
+          resource == Tool::"actualbudget_actual_budgets_switch" ||
+          resource == Tool::"actualbudget_actual_budgets_getMonth" ||
+          resource == Tool::"actualbudget_actual_budgets_getMonths" ||
+          resource == Tool::"actualbudget_actual_budgets_holdForNextMonth" ||
+          resource == Tool::"actualbudget_actual_budgets_resetHold" ||
+          resource == Tool::"actualbudget_actual_budgets_setAmount" ||
+          resource == Tool::"actualbudget_actual_budgets_setCarryover" ||
+          resource == Tool::"actualbudget_actual_budgets_transfer" ||
+          resource == Tool::"actualbudget_actual_budget_updates_batch" ||
+          resource == Tool::"actualbudget_actual_categories_create" ||
+          resource == Tool::"actualbudget_actual_categories_delete" ||
+          resource == Tool::"actualbudget_actual_categories_get" ||
+          resource == Tool::"actualbudget_actual_categories_update" ||
+          resource == Tool::"actualbudget_actual_category_groups_create" ||
+          resource == Tool::"actualbudget_actual_category_groups_delete" ||
+          resource == Tool::"actualbudget_actual_category_groups_get" ||
+          resource == Tool::"actualbudget_actual_category_groups_update" ||
+          resource == Tool::"actualbudget_actual_payees_common_list" ||
+          resource == Tool::"actualbudget_actual_payees_create" ||
+          resource == Tool::"actualbudget_actual_payees_delete" ||
+          resource == Tool::"actualbudget_actual_payees_get" ||
+          resource == Tool::"actualbudget_actual_payees_merge" ||
+          resource == Tool::"actualbudget_actual_payees_update" ||
+          resource == Tool::"actualbudget_actual_payee_rules_get" ||
+          resource == Tool::"actualbudget_actual_query_run" ||
+          resource == Tool::"actualbudget_actual_rules_create" ||
+          resource == Tool::"actualbudget_actual_rules_create_or_update" ||
+          resource == Tool::"actualbudget_actual_rules_delete" ||
+          resource == Tool::"actualbudget_actual_rules_get" ||
+          resource == Tool::"actualbudget_actual_rules_update" ||
+          resource == Tool::"actualbudget_actual_schedules_create" ||
+          resource == Tool::"actualbudget_actual_schedules_delete" ||
+          resource == Tool::"actualbudget_actual_schedules_get" ||
+          resource == Tool::"actualbudget_actual_schedules_update" ||
+          resource == Tool::"actualbudget_actual_transactions_create" ||
+          resource == Tool::"actualbudget_actual_transactions_delete" ||
+          resource == Tool::"actualbudget_actual_transactions_filter" ||
+          resource == Tool::"actualbudget_actual_transactions_get" ||
+          resource == Tool::"actualbudget_actual_transactions_import" ||
+          resource == Tool::"actualbudget_actual_transactions_search_by_amount" ||
+          resource == Tool::"actualbudget_actual_transactions_search_by_category" ||
+          resource == Tool::"actualbudget_actual_transactions_search_by_month" ||
+          resource == Tool::"actualbudget_actual_transactions_search_by_payee" ||
+          resource == Tool::"actualbudget_actual_transactions_summary_by_category" ||
+          resource == Tool::"actualbudget_actual_transactions_summary_by_payee" ||
+          resource == Tool::"actualbudget_actual_transactions_uncategorized" ||
+          resource == Tool::"actualbudget_actual_transactions_update" ||
+          resource == Tool::"actualbudget_actual_transactions_update_batch" ||
+          resource == Tool::"actualbudget_actual_transfers_create" ||
+          resource == Tool::"actualbudget_actual_server_info" ||
+          resource == Tool::"actualbudget_actual_session_close" ||
+          resource == Tool::"actualbudget_actual_session_list" ||
+          resource == Tool::"actualbudget_actual_get_id_by_name" ||
+          resource == Tool::"actualbudget_actual_entities_search" ||
+          resource == Tool::"actualbudget_actual_server_get_version" ||
+          resource == Tool::"actualbudget_actual_tags_list" ||
+          resource == Tool::"actualbudget_actual_tags_create" ||
+          resource == Tool::"actualbudget_actual_tags_update" ||
+          resource == Tool::"actualbudget_actual_tags_delete" ||
+          resource == Tool::"actualbudget_actual_notes_get" ||
+          resource == Tool::"actualbudget_actual_notes_update" ||
+          resource == Tool::"actualbudget_actual_budgets_export" ||
+          resource == Tool::"actualbudget_actual_budgets_import" ||
+          resource == Tool::"actualbudget_actual_preferences_get"
+        };
+
+      # -------------------------------------------------------------------------
+      # toolhive-secretary (Jonathon): SearXNG + memini-jonathon + Koffan
+      #   + CalDAV + CardDAV
+      # Koffan tool names are defined in the forge.wynning.tech/james/koffan-mcp
+      # adapter source; Cedar names listed below are the VMCP-prefixed forms
+      # (MCPServer name "koffan" + raw tool name). Full read+write is granted:
+      # a shopping-list secretary needs to add, update, and remove items.
+      # ToolHive prefix: MCPServerEntry name "memini-jonathon" → "memini-jonathon_".
+      # Verify koffan_* names with `tools/list` after the image is published and
+      # the MCPServer starts (see OIDC.md).
+      #
+      # CalDAV/CardDAV (#1551/#1552) are the pi0n00r/nextcloud-mcp-server image
+      # split into two MCPServers, "caldav" and "carddav" → Cedar prefixes
+      # caldav_ and carddav_ over the raw nc_calendar_*/nc_contacts_* names.
+      # Tool names are EXACT: read from `tools/list` against the pinned digest,
+      # not inferred (see CALDAV-CARDDAV.md).
+      #
+      # The permits below are the complete `toolsFilter` allow-lists from
+      # caldav.yaml and carddav.yaml — Cedar cannot grant anything the filters
+      # do not expose, so the two lists are kept in sync deliberately:
+      #   caldav  5 read + 3 write + 1 destructive (delete_event)
+      #   carddav 4 read + 2 write + 0 destructive
+      # Calendar collection management (manage_calendar), filter-matched mass
+      # edits (bulk_operations), all VTODO tools, contact/address-book deletion
+      # and the lossy contact-write spellings are excluded at the backend and so
+      # have no permit here. Adding a permit for one of them does nothing until
+      # the corresponding toolsFilter entry is added too.
+      # -------------------------------------------------------------------------
+      - |
+        permit(
+          principal in THVGroup::"toolhive-secretary",
+          action == Action::"call_tool",
+          resource is Tool
+        ) when {
+          resource == Tool::"searxng_web_search" ||
+          resource == Tool::"memini-jonathon_memory_briefing" ||
+          resource == Tool::"memini-jonathon_memory_recall" ||
+          resource == Tool::"memini-jonathon_memory_remember" ||
+          resource == Tool::"memini-jonathon_memory_answer" ||
+          resource == Tool::"memini-jonathon_memory_list" ||
+          resource == Tool::"memini-jonathon_memory_get" ||
+          resource == Tool::"memini-jonathon_memory_history" ||
+          resource == Tool::"memini-jonathon_memory_update" ||
+          resource == Tool::"memini-jonathon_memory_forget" ||
+          resource == Tool::"koffan_get_lists" ||
+          resource == Tool::"koffan_get_list" ||
+          resource == Tool::"koffan_create_list" ||
+          resource == Tool::"koffan_update_list" ||
+          resource == Tool::"koffan_delete_list" ||
+          resource == Tool::"koffan_get_items" ||
+          resource == Tool::"koffan_add_item" ||
+          resource == Tool::"koffan_update_item" ||
+          resource == Tool::"koffan_delete_item" ||
+          resource == Tool::"koffan_get_sections" ||
+          resource == Tool::"koffan_add_section" ||
+          resource == Tool::"koffan_update_section" ||
+          resource == Tool::"koffan_delete_section" ||
+          resource == Tool::"koffan_batch_update" ||
+          resource == Tool::"koffan_get_history" ||
+          resource == Tool::"caldav_nc_calendar_list_calendars" ||
+          resource == Tool::"caldav_nc_calendar_list_events" ||
+          resource == Tool::"caldav_nc_calendar_get_event" ||
+          resource == Tool::"caldav_nc_calendar_get_upcoming_events" ||
+          resource == Tool::"caldav_nc_calendar_find_availability" ||
+          resource == Tool::"caldav_nc_calendar_create_event" ||
+          resource == Tool::"caldav_nc_calendar_update_event" ||
+          resource == Tool::"caldav_nc_calendar_create_meeting" ||
+          resource == Tool::"caldav_nc_calendar_delete_event" ||
+          resource == Tool::"carddav_nc_contacts_list_addressbooks" ||
+          resource == Tool::"carddav_nc_contacts_list_contacts" ||
+          resource == Tool::"carddav_nc_contacts_search_contacts" ||
+          resource == Tool::"carddav_nc_contacts_get_contact" ||
+          resource == Tool::"carddav_nc_contacts_create_contact" ||
+          resource == Tool::"carddav_nc_contacts_patch_contact"
+        };
+
+      # -------------------------------------------------------------------------
+      # toolhive-coach (Carol): SearXNG + Joplin (read-only) + memini-carol
+      # Joplin tool names from james/containers#12 joplin-mcp adapter source (HIGH
+      # confidence — tool names registered in the MCP server directly). ToolHive
+      # prepends the MCPServer name "joplin" → Cedar names joplin_<tool_name>.
+      # ToolHive prefix: MCPServerEntry name "memini-carol" → "memini-carol_".
+      #
+      # CardDAV: the backend now exists (carddav.yaml), but the epic's coach
+      # profile is read-only over contacts and #1552 scoped delivery to the
+      # secretary, so no permit is granted here yet. To wire Carol up, add the
+      # four read tools below — the backend exposes no destructive tool, so a
+      # read-only grant is the full four-name list and needs no other change:
+      #   carddav_nc_contacts_list_addressbooks
+      #   carddav_nc_contacts_list_contacts
+      #   carddav_nc_contacts_search_contacts
+      #   carddav_nc_contacts_get_contact
+      # Deliberately not adding carddav_nc_contacts_create_contact /
+      # _patch_contact: coach is a read profile in the epic (#1547).
+      # -------------------------------------------------------------------------
+      - |
+        permit(
+          principal in THVGroup::"toolhive-coach",
+          action == Action::"call_tool",
+          resource is Tool
+        ) when {
+          resource == Tool::"searxng_web_search" ||
+          resource == Tool::"joplin_joplin_search_notes" ||
+          resource == Tool::"joplin_joplin_read_note" ||
+          resource == Tool::"joplin_joplin_list_notes" ||
+          resource == Tool::"joplin_joplin_list_notebooks" ||
+          resource == Tool::"joplin_joplin_list_tags" ||
+          resource == Tool::"memini-carol_memory_briefing" ||
+          resource == Tool::"memini-carol_memory_recall" ||
+          resource == Tool::"memini-carol_memory_remember" ||
+          resource == Tool::"memini-carol_memory_answer" ||
+          resource == Tool::"memini-carol_memory_list" ||
+          resource == Tool::"memini-carol_memory_get" ||
+          resource == Tool::"memini-carol_memory_history" ||
+          resource == Tool::"memini-carol_memory_update" ||
+          resource == Tool::"memini-carol_memory_forget"
+        };
+
+      # -------------------------------------------------------------------------
+      # toolhive-coder (Hephaestus): SearXNG + forgejo-hephaestus + Context7 + GitHub
+      #   + memini-hephaestus + Grafana + KubeSearch
+      # Forgejo tools are prefixed "forgejo-hephaestus_" — the MCPServer name becomes
+      # the VirtualMCPServer conflictResolution prefix. Exact tool names come from
+      # codeberg.org/goern/forgejo-mcp v2.29.0; verify with `tools/list` post-deploy.
+      # Only the forgejo-hephaestus backend is permitted; forgejo-roberto_* tools are
+      # explicitly absent — Hephaestus cannot call Roberto's Forgejo session.
+      # Grafana tools: all 33 names from MCPToolConfig toolsFilter (grafana.yaml) —
+      # statically known, no post-deploy verification required.
+      # KubeSearch tools: from perfectra1n/kubesearch-mcp README (HIGH confidence).
+      # The server registers tools as search_releases, get_release, etc.; ToolHive
+      # prepends "kubesearch_" → Cedar names kubesearch_search_releases, etc.
+      # Repo-clone tools are enabled by default (KUBESEARCH_ENABLE_CLONE not set).
+      # Post-deploy: run `tools/list` to confirm ToolHive prefix is not doubled
+      # (kubesearch_kubesearch_search_releases) and correct here if needed.
+      # ToolHive prefix: MCPServerEntry name "memini-hephaestus" → "memini-hephaestus_".
+      # -------------------------------------------------------------------------
+      - |
+        permit(
+          principal in THVGroup::"toolhive-coder",
+          action == Action::"call_tool",
+          resource is Tool
+        ) when {
+          resource == Tool::"searxng_web_search" ||
+          resource == Tool::"context7_resolve-library-id" ||
+          resource == Tool::"context7_get-library-docs" ||
+          resource == Tool::"github_create_issue" ||
+          resource == Tool::"github_get_issue" ||
+          resource == Tool::"github_list_issues" ||
+          resource == Tool::"github_update_issue" ||
+          resource == Tool::"github_create_pull_request" ||
+          resource == Tool::"github_list_pull_requests" ||
+          resource == Tool::"github_get_pull_request" ||
+          resource == Tool::"github_get_pull_request_files" ||
+          resource == Tool::"github_merge_pull_request" ||
+          resource == Tool::"github_search_repositories" ||
+          resource == Tool::"github_get_repository" ||
+          resource == Tool::"github_get_file_contents" ||
+          resource == Tool::"github_create_or_update_file" ||
+          resource == Tool::"github_push_files" ||
+          resource == Tool::"github_search_code" ||
+          resource == Tool::"github_list_commits" ||
+          resource == Tool::"github_get_commit" ||
+          resource == Tool::"github_create_branch" ||
+          resource == Tool::"github_list_branches" ||
+          resource == Tool::"github_fork_repository" ||
+          resource == Tool::"github_create_repository" ||
+          resource == Tool::"forgejo-hephaestus_create_issue" ||
+          resource == Tool::"forgejo-hephaestus_get_issue" ||
+          resource == Tool::"forgejo-hephaestus_list_issues" ||
+          resource == Tool::"forgejo-hephaestus_update_issue" ||
+          resource == Tool::"forgejo-hephaestus_create_pull_request" ||
+          resource == Tool::"forgejo-hephaestus_list_pull_requests" ||
+          resource == Tool::"forgejo-hephaestus_get_pull_request" ||
+          resource == Tool::"forgejo-hephaestus_get_pull_request_files" ||
+          resource == Tool::"forgejo-hephaestus_merge_pull_request" ||
+          resource == Tool::"forgejo-hephaestus_search_repositories" ||
+          resource == Tool::"forgejo-hephaestus_get_repository" ||
+          resource == Tool::"forgejo-hephaestus_get_file_contents" ||
+          resource == Tool::"forgejo-hephaestus_create_or_update_file" ||
+          resource == Tool::"forgejo-hephaestus_push_files" ||
+          resource == Tool::"forgejo-hephaestus_search_code" ||
+          resource == Tool::"forgejo-hephaestus_list_commits" ||
+          resource == Tool::"forgejo-hephaestus_get_commit" ||
+          resource == Tool::"forgejo-hephaestus_create_branch" ||
+          resource == Tool::"forgejo-hephaestus_list_branches" ||
+          resource == Tool::"forgejo-hephaestus_fork_repository" ||
+          resource == Tool::"forgejo-hephaestus_create_repository" ||
+          resource == Tool::"memini-hephaestus_memory_briefing" ||
+          resource == Tool::"memini-hephaestus_memory_recall" ||
+          resource == Tool::"memini-hephaestus_memory_remember" ||
+          resource == Tool::"memini-hephaestus_memory_answer" ||
+          resource == Tool::"memini-hephaestus_memory_list" ||
+          resource == Tool::"memini-hephaestus_memory_get" ||
+          resource == Tool::"memini-hephaestus_memory_history" ||
+          resource == Tool::"memini-hephaestus_memory_update" ||
+          resource == Tool::"memini-hephaestus_memory_forget" ||
+          resource == Tool::"grafana_list_datasources" ||
+          resource == Tool::"grafana_get_datasource_by_uid" ||
+          resource == Tool::"grafana_get_datasource_by_name" ||
+          resource == Tool::"grafana_query_prometheus" ||
+          resource == Tool::"grafana_query_prometheus_histogram" ||
+          resource == Tool::"grafana_list_prometheus_metric_names" ||
+          resource == Tool::"grafana_list_prometheus_metric_metadata" ||
+          resource == Tool::"grafana_list_prometheus_label_names" ||
+          resource == Tool::"grafana_list_prometheus_label_values" ||
+          resource == Tool::"grafana_list_alert_rules" ||
+          resource == Tool::"grafana_get_alert_rule_by_uid" ||
+          resource == Tool::"grafana_create_alert_rule" ||
+          resource == Tool::"grafana_update_alert_rule" ||
+          resource == Tool::"grafana_delete_alert_rule" ||
+          resource == Tool::"grafana_list_alert_groups" ||
+          resource == Tool::"grafana_get_alert_group" ||
+          resource == Tool::"grafana_list_contact_points" ||
+          resource == Tool::"grafana_search_dashboards" ||
+          resource == Tool::"grafana_get_dashboard_by_uid" ||
+          resource == Tool::"grafana_get_dashboard_summary" ||
+          resource == Tool::"grafana_get_dashboard_property" ||
+          resource == Tool::"grafana_get_dashboard_panel_queries" ||
+          resource == Tool::"grafana_update_dashboard" ||
+          resource == Tool::"grafana_search_folders" ||
+          resource == Tool::"grafana_create_folder" ||
+          resource == Tool::"grafana_get_panel_image" ||
+          resource == Tool::"grafana_generate_deeplink" ||
+          resource == Tool::"grafana_get_annotations" ||
+          resource == Tool::"grafana_get_annotation_tags" ||
+          resource == Tool::"grafana_create_annotation" ||
+          resource == Tool::"grafana_update_annotation" ||
+          resource == Tool::"grafana_patch_annotation" ||
+          resource == Tool::"grafana_create_graphite_annotation" ||
+          resource == Tool::"kubesearch_search_releases" ||
+          resource == Tool::"kubesearch_get_release" ||
+          resource == Tool::"kubesearch_search_images" ||
+          resource == Tool::"kubesearch_grep_values" ||
+          resource == Tool::"kubesearch_status" ||
+          resource == Tool::"kubesearch_repo_clone" ||
+          resource == Tool::"kubesearch_repo_list_files" ||
+          resource == Tool::"kubesearch_repo_read_file" ||
+          resource == Tool::"kubesearch_repo_grep" ||
+          resource == Tool::"kubesearch_repo_cleanup"
+        };
+
+      # -------------------------------------------------------------------------
+      # toolhive-home-ops (Roberto): SearXNG + forgejo-roberto + Context7 + GitHub
+      #   + memini-roberto + Grafana + KubeSearch + Home Assistant + Flux Operator
+      # Forgejo tools are prefixed "forgejo-roberto_". Only the forgejo-roberto
+      # backend is permitted; forgejo-hephaestus_* tools are absent — Roberto cannot
+      # call Hephaestus's Forgejo session. Separate Cedar permit ensures authorization
+      # requires both a valid JWT group claim and an explicit policy — the semantic
+      # optimizer alone cannot grant access across the boundary.
+      # Home Assistant tools: from homeassistant-ai/ha-mcp v8.3.0 source (HIGH
+      # confidence — read from @mcp.tool(name="ha_*") registrations). The server
+      # prefixes all tools with ha_; ToolHive adds homeassistant_ → Cedar names
+      # homeassistant_ha_*.
+      # Flux Operator tools: from controlplaneio-fluxcd/flux-operator-mcp v0.58.1
+      # source constants in cmd/mcp/toolbox/*.go (HIGH confidence). Note: docs list
+      # separate reconcile_flux_{source,kustomization,helmrelease,resourceset} tools
+      # but source has a single reconcile_flux_resource — source is authoritative.
+      # ToolHive prefix: MCPServerEntry name "memini-roberto" → "memini-roberto_".
+      # -------------------------------------------------------------------------
+      - |
+        permit(
+          principal in THVGroup::"toolhive-home-ops",
+          action == Action::"call_tool",
+          resource is Tool
+        ) when {
+          resource == Tool::"searxng_web_search" ||
+          resource == Tool::"context7_resolve-library-id" ||
+          resource == Tool::"context7_get-library-docs" ||
+          resource == Tool::"github_create_issue" ||
+          resource == Tool::"github_get_issue" ||
+          resource == Tool::"github_list_issues" ||
+          resource == Tool::"github_update_issue" ||
+          resource == Tool::"github_create_pull_request" ||
+          resource == Tool::"github_list_pull_requests" ||
+          resource == Tool::"github_get_pull_request" ||
+          resource == Tool::"github_get_pull_request_files" ||
+          resource == Tool::"github_merge_pull_request" ||
+          resource == Tool::"github_search_repositories" ||
+          resource == Tool::"github_get_repository" ||
+          resource == Tool::"github_get_file_contents" ||
+          resource == Tool::"github_create_or_update_file" ||
+          resource == Tool::"github_push_files" ||
+          resource == Tool::"github_search_code" ||
+          resource == Tool::"github_list_commits" ||
+          resource == Tool::"github_get_commit" ||
+          resource == Tool::"github_create_branch" ||
+          resource == Tool::"github_list_branches" ||
+          resource == Tool::"github_fork_repository" ||
+          resource == Tool::"github_create_repository" ||
+          resource == Tool::"forgejo-roberto_create_issue" ||
+          resource == Tool::"forgejo-roberto_get_issue" ||
+          resource == Tool::"forgejo-roberto_list_issues" ||
+          resource == Tool::"forgejo-roberto_update_issue" ||
+          resource == Tool::"forgejo-roberto_create_pull_request" ||
+          resource == Tool::"forgejo-roberto_list_pull_requests" ||
+          resource == Tool::"forgejo-roberto_get_pull_request" ||
+          resource == Tool::"forgejo-roberto_get_pull_request_files" ||
+          resource == Tool::"forgejo-roberto_merge_pull_request" ||
+          resource == Tool::"forgejo-roberto_search_repositories" ||
+          resource == Tool::"forgejo-roberto_get_repository" ||
+          resource == Tool::"forgejo-roberto_get_file_contents" ||
+          resource == Tool::"forgejo-roberto_create_or_update_file" ||
+          resource == Tool::"forgejo-roberto_push_files" ||
+          resource == Tool::"forgejo-roberto_search_code" ||
+          resource == Tool::"forgejo-roberto_list_commits" ||
+          resource == Tool::"forgejo-roberto_get_commit" ||
+          resource == Tool::"forgejo-roberto_create_branch" ||
+          resource == Tool::"forgejo-roberto_list_branches" ||
+          resource == Tool::"forgejo-roberto_fork_repository" ||
+          resource == Tool::"forgejo-roberto_create_repository" ||
+          resource == Tool::"memini-roberto_memory_briefing" ||
+          resource == Tool::"memini-roberto_memory_recall" ||
+          resource == Tool::"memini-roberto_memory_remember" ||
+          resource == Tool::"memini-roberto_memory_answer" ||
+          resource == Tool::"memini-roberto_memory_list" ||
+          resource == Tool::"memini-roberto_memory_get" ||
+          resource == Tool::"memini-roberto_memory_history" ||
+          resource == Tool::"memini-roberto_memory_update" ||
+          resource == Tool::"memini-roberto_memory_forget" ||
+          resource == Tool::"grafana_list_datasources" ||
+          resource == Tool::"grafana_get_datasource_by_uid" ||
+          resource == Tool::"grafana_get_datasource_by_name" ||
+          resource == Tool::"grafana_query_prometheus" ||
+          resource == Tool::"grafana_query_prometheus_histogram" ||
+          resource == Tool::"grafana_list_prometheus_metric_names" ||
+          resource == Tool::"grafana_list_prometheus_metric_metadata" ||
+          resource == Tool::"grafana_list_prometheus_label_names" ||
+          resource == Tool::"grafana_list_prometheus_label_values" ||
+          resource == Tool::"grafana_list_alert_rules" ||
+          resource == Tool::"grafana_get_alert_rule_by_uid" ||
+          resource == Tool::"grafana_create_alert_rule" ||
+          resource == Tool::"grafana_update_alert_rule" ||
+          resource == Tool::"grafana_delete_alert_rule" ||
+          resource == Tool::"grafana_list_alert_groups" ||
+          resource == Tool::"grafana_get_alert_group" ||
+          resource == Tool::"grafana_list_contact_points" ||
+          resource == Tool::"grafana_search_dashboards" ||
+          resource == Tool::"grafana_get_dashboard_by_uid" ||
+          resource == Tool::"grafana_get_dashboard_summary" ||
+          resource == Tool::"grafana_get_dashboard_property" ||
+          resource == Tool::"grafana_get_dashboard_panel_queries" ||
+          resource == Tool::"grafana_update_dashboard" ||
+          resource == Tool::"grafana_search_folders" ||
+          resource == Tool::"grafana_create_folder" ||
+          resource == Tool::"grafana_get_panel_image" ||
+          resource == Tool::"grafana_generate_deeplink" ||
+          resource == Tool::"grafana_get_annotations" ||
+          resource == Tool::"grafana_get_annotation_tags" ||
+          resource == Tool::"grafana_create_annotation" ||
+          resource == Tool::"grafana_update_annotation" ||
+          resource == Tool::"grafana_patch_annotation" ||
+          resource == Tool::"grafana_create_graphite_annotation" ||
+          resource == Tool::"kubesearch_search_releases" ||
+          resource == Tool::"kubesearch_get_release" ||
+          resource == Tool::"kubesearch_search_images" ||
+          resource == Tool::"kubesearch_grep_values" ||
+          resource == Tool::"kubesearch_status" ||
+          resource == Tool::"kubesearch_repo_clone" ||
+          resource == Tool::"kubesearch_repo_list_files" ||
+          resource == Tool::"kubesearch_repo_read_file" ||
+          resource == Tool::"kubesearch_repo_grep" ||
+          resource == Tool::"kubesearch_repo_cleanup" ||
+          resource == Tool::"homeassistant_ha_get_app" ||
+          resource == Tool::"homeassistant_ha_manage_app" ||
+          resource == Tool::"homeassistant_ha_list_floors_areas" ||
+          resource == Tool::"homeassistant_ha_set_area_or_floor" ||
+          resource == Tool::"homeassistant_ha_remove_area_or_floor" ||
+          resource == Tool::"homeassistant_ha_manage_pipeline" ||
+          resource == Tool::"homeassistant_ha_get_blueprint" ||
+          resource == Tool::"homeassistant_ha_import_blueprint" ||
+          resource == Tool::"homeassistant_ha_config_get_calendar_events" ||
+          resource == Tool::"homeassistant_ha_config_set_calendar_event" ||
+          resource == Tool::"homeassistant_ha_config_remove_calendar_event" ||
+          resource == Tool::"homeassistant_ha_config_get_category" ||
+          resource == Tool::"homeassistant_ha_config_set_category" ||
+          resource == Tool::"homeassistant_ha_config_remove_category" ||
+          resource == Tool::"homeassistant_ha_config_get_automation" ||
+          resource == Tool::"homeassistant_ha_config_set_automation" ||
+          resource == Tool::"homeassistant_ha_config_remove_automation" ||
+          resource == Tool::"homeassistant_ha_config_get_dashboard" ||
+          resource == Tool::"homeassistant_ha_config_set_dashboard" ||
+          resource == Tool::"homeassistant_ha_config_delete_dashboard" ||
+          resource == Tool::"homeassistant_ha_config_list_helpers" ||
+          resource == Tool::"homeassistant_ha_config_set_helper" ||
+          resource == Tool::"homeassistant_ha_config_get_scene" ||
+          resource == Tool::"homeassistant_ha_config_set_scene" ||
+          resource == Tool::"homeassistant_ha_config_remove_scene" ||
+          resource == Tool::"homeassistant_ha_config_get_script" ||
+          resource == Tool::"homeassistant_ha_config_set_script" ||
+          resource == Tool::"homeassistant_ha_config_remove_script" ||
+          resource == Tool::"homeassistant_ha_get_camera_image" ||
+          resource == Tool::"homeassistant_ha_config_list_dashboard_resources" ||
+          resource == Tool::"homeassistant_ha_config_set_dashboard_resource" ||
+          resource == Tool::"homeassistant_ha_config_delete_dashboard_resource" ||
+          resource == Tool::"homeassistant_ha_manage_energy_prefs" ||
+          resource == Tool::"homeassistant_ha_get_entity" ||
+          resource == Tool::"homeassistant_ha_set_entity" ||
+          resource == Tool::"homeassistant_ha_remove_entity" ||
+          resource == Tool::"homeassistant_ha_list_files" ||
+          resource == Tool::"homeassistant_ha_read_file" ||
+          resource == Tool::"homeassistant_ha_write_file" ||
+          resource == Tool::"homeassistant_ha_delete_file" ||
+          resource == Tool::"homeassistant_ha_config_list_groups" ||
+          resource == Tool::"homeassistant_ha_config_set_group" ||
+          resource == Tool::"homeassistant_ha_config_remove_group" ||
+          resource == Tool::"homeassistant_ha_get_hacs_info" ||
+          resource == Tool::"homeassistant_ha_manage_hacs" ||
+          resource == Tool::"homeassistant_ha_get_history" ||
+          resource == Tool::"homeassistant_ha_get_state" ||
+          resource == Tool::"homeassistant_ha_get_integration" ||
+          resource == Tool::"homeassistant_ha_set_integration" ||
+          resource == Tool::"homeassistant_ha_remove_helpers_integrations" ||
+          resource == Tool::"homeassistant_ha_config_get_label" ||
+          resource == Tool::"homeassistant_ha_config_set_label" ||
+          resource == Tool::"homeassistant_ha_config_remove_label" ||
+          resource == Tool::"homeassistant_ha_manage_radio" ||
+          resource == Tool::"homeassistant_ha_get_device" ||
+          resource == Tool::"homeassistant_ha_set_device" ||
+          resource == Tool::"homeassistant_ha_remove_device" ||
+          resource == Tool::"homeassistant_ha_config_get_yaml" ||
+          resource == Tool::"homeassistant_ha_config_set_yaml" ||
+          resource == Tool::"homeassistant_ha_get_overview" ||
+          resource == Tool::"homeassistant_ha_search" ||
+          resource == Tool::"homeassistant_ha_manage_security_policy" ||
+          resource == Tool::"homeassistant_ha_list_services" ||
+          resource == Tool::"homeassistant_ha_call_service" ||
+          resource == Tool::"homeassistant_ha_restart" ||
+          resource == Tool::"homeassistant_ha_reload_core" ||
+          resource == Tool::"homeassistant_ha_get_system_health" ||
+          resource == Tool::"homeassistant_ha_get_operation_status" ||
+          resource == Tool::"homeassistant_ha_manage_theme" ||
+          resource == Tool::"homeassistant_ha_get_todo" ||
+          resource == Tool::"homeassistant_ha_set_todo_item" ||
+          resource == Tool::"homeassistant_ha_remove_todo_item" ||
+          resource == Tool::"homeassistant_ha_get_automation_traces" ||
+          resource == Tool::"homeassistant_ha_manage_updates" ||
+          resource == Tool::"homeassistant_ha_get_entity_exposure" ||
+          resource == Tool::"homeassistant_ha_dev_manage_settings" ||
+          resource == Tool::"homeassistant_ha_dev_manage_server" ||
+          resource == Tool::"homeassistant_ha_report_issue" ||
+          resource == Tool::"homeassistant_ha_bulk_control" ||
+          resource == Tool::"homeassistant_ha_call_event" ||
+          resource == Tool::"homeassistant_ha_get_zone" ||
+          resource == Tool::"homeassistant_ha_set_zone" ||
+          resource == Tool::"homeassistant_ha_remove_zone" ||
+          resource == Tool::"flux-operator_get_flux_instance" ||
+          resource == Tool::"flux-operator_get_kubernetes_resources" ||
+          resource == Tool::"flux-operator_get_kubernetes_logs" ||
+          resource == Tool::"flux-operator_get_kubernetes_metrics" ||
+          resource == Tool::"flux-operator_get_kubernetes_api_versions" ||
+          resource == Tool::"flux-operator_get_kubeconfig_contexts" ||
+          resource == Tool::"flux-operator_set_kubeconfig_context" ||
+          resource == Tool::"flux-operator_reconcile_flux_resource" ||
+          resource == Tool::"flux-operator_suspend_flux_reconciliation" ||
+          resource == Tool::"flux-operator_resume_flux_reconciliation" ||
+          resource == Tool::"flux-operator_apply_kubernetes_manifest" ||
+          resource == Tool::"flux-operator_delete_kubernetes_resource" ||
+          resource == Tool::"flux-operator_diff_kubernetes_manifest" ||
+          resource == Tool::"flux-operator_install_flux_instance" ||
+          resource == Tool::"flux-operator_search_flux_docs"
+        };
+
+      # -------------------------------------------------------------------------
+      # toolhive-researcher (Sagan): SearXNG + Karakeep (read-only) + Joplin (read-only) + memini-sagan
+      # Karakeep tool names come from MCPToolConfig renaming in karakeep.yaml plus
+      # the VirtualMCPServer workload prefix "karakeep_". Only search/get/list tools
+      # are permitted; create/add/attach/remove tools are intentionally excluded.
+      # Joplin tool names from james/containers#12 joplin-mcp adapter source (HIGH
+      # confidence). ToolHive prefix "joplin_" + adapter tool names → joplin_joplin_*.
+      # llm-wiki: no backend deployed; add when isolated wiki MCP server is wired.
+      # ToolHive prefix: MCPServerEntry name "memini-sagan" → "memini-sagan_".
+      # -------------------------------------------------------------------------
+      - |
+        permit(
+          principal in THVGroup::"toolhive-researcher",
+          action == Action::"call_tool",
+          resource is Tool
+        ) when {
+          resource == Tool::"searxng_web_search" ||
+          resource == Tool::"karakeep_get_bookmark" ||
+          resource == Tool::"karakeep_get_bookmark_content" ||
+          resource == Tool::"karakeep_get_lists" ||
+          resource == Tool::"karakeep_search_bookmarks" ||
+          resource == Tool::"joplin_joplin_search_notes" ||
+          resource == Tool::"joplin_joplin_read_note" ||
+          resource == Tool::"joplin_joplin_list_notes" ||
+          resource == Tool::"joplin_joplin_list_notebooks" ||
+          resource == Tool::"joplin_joplin_list_tags" ||
+          resource == Tool::"memini-sagan_memory_briefing" ||
+          resource == Tool::"memini-sagan_memory_recall" ||
+          resource == Tool::"memini-sagan_memory_remember" ||
+          resource == Tool::"memini-sagan_memory_answer" ||
+          resource == Tool::"memini-sagan_memory_list" ||
+          resource == Tool::"memini-sagan_memory_get" ||
+          resource == Tool::"memini-sagan_memory_history" ||
+          resource == Tool::"memini-sagan_memory_update" ||
+          resource == Tool::"memini-sagan_memory_forget"
+        };

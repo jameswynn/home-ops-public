@@ -1,0 +1,27 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app __APP__
+  namespace: &namespace __APP__
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  # __COMPONENTS_BLOCK__
+  postBuild:
+    substitute:
+      APP: *app
+      # __SUBSTITUTE_EXTRAS__
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/__APP__/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

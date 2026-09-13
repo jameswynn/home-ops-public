@@ -1,0 +1,16 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/nfd.k8s-sigs.io/nodefeaturerule_v1alpha1.json
+apiVersion: nfd.k8s-sigs.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: conbee
+spec:
+  rules:
+    # Conbee Zigbee hub
+    - name: conbee
+      labels:
+        feature.node.kubernetes.io/conbee: "true"
+      matchFeatures:
+        - feature: usb.device
+          matchExpressions:
+            vendor: { op: In, value: [ "1cf1", "0030" ] }
