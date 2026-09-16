@@ -1,0 +1,160 @@
+---
+version: "3"
+
+tasks:
+
+  list-dockerhub:
+    desc: What dockerhub images are running in my cluster
+    cmds:
+      - kubectl get pods --all-namespaces -o=jsonpath="{range .items[*]}{'\n'}{range .spec.containers[*]}{.image}{'\n'}{end}{end}" | sort | uniq | grep -Ev 'quay\.io|gcr|ghcr\.io|ecr|us-docker|registry.k8s|forge\.|code\.|codeberg\.|iceshrimp' | grep -Ev 'bitnami|rancher|longhornio|intel|grafana' |  sed -e 's/docker\.io\///g' | sort | uniq
+
+  delete-failed-pods:
+    desc: Deletes failed pods
+    cmds:
+      - kubectl delete pods --field-selector status.phase=Failed -A --ignore-not-found=true
+
+  hr-restart:
+    desc: Restart all failed Helm Releases
+    cmds:
+      - kubectl get hr --all-namespaces | grep False | awk '{print $2, $1}' | xargs -l bash -c 'flux suspend hr $0 -n $1'
+      - kubectl get hr --all-namespaces | grep False | awk '{print $2, $1}' | xargs -l bash -c 'flux resume hr $0 -n $1'
+
+  hc-sync:
+    desc: Resync all sources
+    cmds:
+      - kubectl get helmrepo --no-headers -A | awk '{print $2, $1}' | xargs -l bash -c 'flux reconcile source helm $0 -n $1'
+      - kubectl get gitrepo --no-headers -A | awk '{print $2, $1}' | xargs -l bash -c 'flux reconcile source git $0 -n $1'
+
+  hr-retry:
+    desc: Restart a specific Helm Release
+    cmds:
+      - flux suspend hr {{.CLI_ARGS}}
+      - flux resume hr {{.CLI_ARGS}}
+
+  reconcile:
+    desc: Force update Flux to pull in changes from your Git repository
+    cmds:
+      - flux reconcile -n flux-system source git flux-system
+      - flux reconcile -n flux-system kustomization flux-system
+
+  nodes:
+    desc: List all the nodes in your cluster
+    cmds:
+      - kubectl get nodes {{.CLI_ARGS | default "-o wide"}}
+
+  pods:
+    desc: List all the pods in your cluster
+    cmds:
+      - kubectl get pods {{.CLI_ARGS | default "-A"}}
+
+  kustomizations:
+    desc: List all the kustomizations in your cluster
+    cmds:
+      - kubectl get kustomizations {{.CLI_ARGS | default "-A"}}
+
+  helmreleases:
+    desc: List all the helmreleases in your cluster
+    cmds:
+      - kubectl get helmreleases {{.CLI_ARGS | default "-A"}}
+
+  helmrepositories:
+    desc: List all the helmrepositories in your cluster
+    cmds:
+      - kubectl get helmrepositories {{.CLI_ARGS | default "-A"}}
+
+  gitrepositories:
+    desc: List all the gitrepositories in your cluster
+    cmds:
+      - kubectl get gitrepositories {{.CLI_ARGS | default "-A"}}
+
+  certificates:
+    desc: List all the certificates in your cluster
+    cmds:
+      - kubectl get certificates {{.CLI_ARGS | default "-A"}}
+      - kubectl get certificaterequests {{.CLI_ARGS | default "-A"}}
+
+  ingresses:
+    desc: List all the ingresses in your cluster
+    cmds:
+      - kubectl get ingress {{.CLI_ARGS | default "-A"}}
+
+  resources:
+    desc: Gather common resources in your cluster, useful when asking for support
+    cmds:
+      - task: nodes
+      - task: kustomizations
+      - task: helmreleases
+      - task: helmrepositories
+      - task: gitrepositories
+      - task: certificates
+      - task: ingresses
+      - task: pods
+
+  mount:
+    desc: Mount a PersistentVolumeClaim to a pod temporarily
+    interactive: true
+    vars:
+      claim: '{{ or .claim (fail "PersistentVolumeClaim `claim` is required") }}'
+      namespace: '{{.namespace | default "default"}}'
+    cmds:
+      - |
+        kubectl run -n {{.namespace}} debug-{{.claim}} -i --tty --rm --image=null --privileged --overrides='
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "containers": [
+                {
+                  "name": "debug",
+                  "image": "busybox:latest",
+                  "stdin": true,
+                  "stdinOnce": true,
+                  "tty": true,
+                  "volumeMounts": [
+                    {
+                      "name": "config",
+                      "mountPath": "/data/config"
+                    }
+                  ]
+                }
+              ],
+              "volumes": [
+                {
+                  "name": "config",
+                  "persistentVolumeClaim": {
+                    "claimName": "{{.claim}}"
+                  }
+                }
+              ],
+              "restartPolicy": "Never"
+            }
+          }'
+    preconditions:
+      - kubectl -n {{.namespace}} get pvc {{.claim}}
+
+  sync-secrets:
+    desc: Sync all ExternalSecrets
+    cmds:
+      - for: { var: SECRETS, split: "\n" }
+        cmd: kubectl --namespace {{splitList "," .ITEM | first}} annotate externalsecret {{splitList "," .ITEM | last}} force-sync="{{now | unixEpoch}}" --overwrite
+    vars:
+      SECRETS:
+        sh: kubectl get externalsecret --all-namespaces --no-headers --output=jsonpath='{range .items[*]}{.metadata.namespace},{.metadata.name}{"\n"}{end}'
+    preconditions:
+      - which kubectl
+
+  sync-secret:
+    vars:
+      secret: '{{ or .secret (fail "ExternalSecret `secret` is required") }}'
+      namespace: '{{.namespace | default "default"}}'
+    desc: Sync a single ExternalSecrets
+    cmds:
+      - cmd: kubectl --namespace {{.namespace}} annotate externalsecret {{.secret}} force-sync="{{now | unixEpoch}}" --overwrite
+    preconditions:
+      - which kubectl
+
+  delete-old-pods:
+    vars:
+      namespace: '{{.namespace | default "default"}}'
+    desc: Delete pods not in a running state
+    cmds:
+      - cmd: kubectl get pods -n {{.namespace}} --no-headers --field-selector status.phase!=Running | cut -d ' ' -f 1 | xargs -l bash -c 'kubectl delete pod -n {{.namespace}} $0'

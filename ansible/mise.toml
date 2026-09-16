@@ -1,0 +1,7 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+#
+# Replaces ./ansible/.envrc. Tools are inherited from the repo-root mise.toml;
+# this file only scopes the Ansible config to this directory.
+
+[env]
+ANSIBLE_CONFIG = "{{config_root}}/ansible.cfg"

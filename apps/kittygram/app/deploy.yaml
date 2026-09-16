@@ -1,0 +1,53 @@
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: kittygram
+spec:
+  image: forge.wynning.tech/james/kittygram
+  interval: 1m
+  secretRef:
+    name: forge-wynning-tech-creds
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: kittygram
+spec:
+  imageRepositoryRef:
+    name: kittygram
+  policy:
+    semver:
+      range: ">=1.0.0"
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: kittygram
+spec:
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: Flux Bot
+        email: flux@example.com
+      messageTemplate: |
+        kittygram: automated image update
+
+        Automation: {{ .AutomationObject.Namespace }}/{{ .AutomationObject.Name }}
+        {{- range .Changed.Changes }}
+        - {{ .OldValue }} -> {{ .NewValue }}
+        {{- end }}
+
+    push:
+      branch: main
+  update:
+    strategy: Setters
+    path: ./apps/kittygram/app

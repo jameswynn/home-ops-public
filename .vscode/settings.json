@@ -1,0 +1,12 @@
+{
+  "yaml.schemas": {
+    "https://frigate.int.wynning.tech/api/config/schema.json": "file:///var/home/wynnj/projects/home-ops/apps/home/frigate/app/config.yaml",
+    "https://k8s-schemas.wynning.tech/volsync.backube/replicationdestination_v1alpha1.json": "file:///var/home/wynnj/projects/home-ops/components/volsync/replicationdestination.yaml"
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "bluebrown.yamlfmt"
+  },
+  "cSpell.words": [
+    "litellm"
+  ],
+}

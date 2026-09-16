@@ -1,0 +1,28 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/externaldns.k8s.io/dnsendpoint_v1alpha1.json
+apiVersion: externaldns.k8s.io/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: continuwuity-matrix-fed
+spec:
+  endpoints:
+    # _matrix-fed._tcp is the SRV record the current server-server spec resolves
+    # (step 3 of "Resolving server names"); _matrix._tcp is the deprecated step 3a
+    # fallback. Both point at the same place, so publishing this one only widens
+    # the set of peers that find us by SRV.
+    #
+    # The existing _matrix._tcp record is NOT managed here on purpose: it was
+    # created by hand in Cloudflare and has no external-dns ownership TXT, so
+    # `policy: sync` leaves it alone. Keep it — a peer whose well-known fetch
+    # fails has no other way to learn the port, and the apex has no 8448 open.
+    #
+    # There is no HTTPRoute annotation form for SRV, so this goes through the crd
+    # source. Picked up by cloudflare-dns-towonel (public) and, like the towonel
+    # DNSEndpoint, also by mikrotik-dns (internal split-horizon) — both instances
+    # have SRV in their managed record types.
+    - dnsName: "_matrix-fed._tcp.${SECRET_ROOT_DOMAIN}"
+      recordType: SRV
+      recordTTL: 300
+      # priority weight port target — mirrors the live _matrix._tcp record.
+      targets:
+        - "10 1 443 matrix.${SECRET_ROOT_DOMAIN}"

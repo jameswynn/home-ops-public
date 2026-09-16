@@ -1,0 +1,181 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: forgejo
+  namespace: dev
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: forgejo
+  install:
+    timeout: 10m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 10m
+    remediation:
+      retries: 3
+  values:
+    # ref: https://gitea.com/gitea/helm-chart/#configuration
+    # gitea:
+    #   oauth:
+    #     - name: 'Authentik'
+    #       provider: 'openidconnect'
+    #       key: ''
+    #       secret: ''
+    #       autoDiscoverUrl: 'https://auth.${SECRET_ROOT_DOMAIN}/application/o/${SECRET_GITEA_AUTHENTIK_SLUG}/.well-known/openid-configuration'
+
+    strategy:
+      type: Recreate
+
+    # CPU from 7d of Prometheus data: p50 30.4m, p95 53.4m, max 203m — clone,
+    # push and CI webhook fan-out are what move it. The old 50m request sat
+    # right at the sustained load with nothing left for a burst, so 150m.
+    # No CPU limit, per the cluster convention: throttling git operations
+    # shows up directly as slow clones and stalled CI.
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 150m
+        ephemeral-storage: 100Mi
+      limits:
+        memory: 2Gi
+        ephemeral-storage: 200Mi
+
+    gitea:
+      admin:
+        username: ""
+        password: ""
+      config:
+        APP_NAME: Wynning Forge
+        database:
+          DB_TYPE: postgres
+          HOST: ${SVC_POSTGRES_HOST}:5432
+          NAME: gitea
+          USER: gitea
+        cron:
+          ENABLED: true
+        server:
+          DOMAIN: forge.${SECRET_ROOT_DOMAIN}
+          ROOT_URL: https://forge.${SECRET_ROOT_DOMAIN}
+          LANDING_PAGE: /james
+          # Built-in Go SSH server, fronted by the envoy-internal `ssh` TCP
+          # listener (see tcpRoute below). The image is rootless, so
+          # START_SSH_SERVER defaults to true and the chart already defaults
+          # SSH_LISTEN_PORT to 2222 and SSH_DOMAIN to DOMAIN.
+          #
+          # DISABLE_SSH must be explicitly false, not merely absent: the chart's
+          # init container *merges* into the app.ini already on the PVC and never
+          # deletes keys, so the previous `DISABLE_SSH = true` survives removal
+          # from these values and keeps SSH off forever.
+          DISABLE_SSH: false
+          # Likewise SSH_PORT must be set by hand — the chart pins it to 22 in
+          # values.yaml for the rootful image, so service.ssh.port never reaches
+          # it and clone URLs would otherwise advertise the wrong port.
+          SSH_PORT: 2222
+          # Prefer the ed25519 host key already on the PVC over the RSA one the
+          # upstream default (ssh/gitea.rsa) would otherwise pick up.
+          SSH_SERVER_HOST_KEYS: ssh/ssh_host_ed25519_key
+        service:
+          REQUIRE_SIGNIN_VIEW: false
+          DISABLE_REGISTRATION: true
+          ENABLE_NOTIFY_MAIL: true
+          ENABLE_BASIC_AUTHENTICATION: false
+          ENABLE_INTERNAL_SIGNIN: false
+        indexer:
+          REPO_INDEXER_ENABLED: true
+          REPO_INDEXER_REPO_TYPES: sources,forks,mirrors,templates
+        # oauth2:
+        #   ENABLE_AUTO_REGISTRATION: true
+        #   USERNAME: nickname
+        #   UPDATE_AVATAR: true
+        #   ACCOUNT_LINKING: auto
+        mailer:
+          ENABLED: true
+          PROTOCOL: smtp
+          FROM: "Wynning Tech Forge <no-reply@${SECRET_ROOT_DOMAIN}>"
+          SMTP_ADDR: smtp.comms.svc.cluster.local
+          SMTP_PORT: 25
+        cache:
+          ADAPTER: redis
+          HOST: redis://forgejo-dragonfly:6379?pool_size=100&idle_timeout=180s
+        admin:
+          SEND_NOTIFICATION_EMAIL_ON_NEW_USER: true
+        ui:
+          DEFAULT_THEME: forgejo-dark-deuteranopia-protanopia
+          user:
+            REPO_PAGING_NUM: 20
+        ui.meta:
+          AUTHOR: James Wynn
+          DESCRIPTION: 'Wynning Forge'
+        repository.signing:
+          FORMAT: ssh
+          SIGNING_KEY: /data/signing/ed25519.pub
+          SIGNING_NAME: Wynning Forge
+          SIGNING_EMAIL: noreply@wynning.tech
+          INITIAL_COMMIT: pubkey
+          CRUD_ACTIONS: pubkey, parentsigned
+          WIKI: never
+          MERGES: pubkey
+
+    postgresql:
+      enabled: false
+
+    postgresql-ha:
+      enabled: false
+
+    redis-cluster:
+      enabled: false
+
+    # Disabled: caching is served by the forgejo-dragonfly instance instead.
+    # The subchart renders nothing, so the 500m CPU limit that used to sit
+    # under master.resources was dead config and has been dropped.
+    redis:
+      enabled: false
+
+    # Route is defined in httproute.yaml instead: the chart cannot express the
+    # anubis backendRef, so the public hostname is routed by hand.
+    httpRoute:
+      enabled: false
+
+    # SSH, unlike http, is chart-generated: TCPRoute/forgejo-ssh ->
+    # Service/forgejo-ssh:2222, bound to the envoy-internal `ssh` listener.
+    tcpRoute:
+      enabled: true
+      parentRefs:
+        - name: envoy-internal
+          namespace: networking
+          sectionName: ssh
+
+    service:
+      ssh:
+        port: 2222
+
+    persistence:
+      enabled: true
+      mount: true
+      create: false
+      claimName: data-forgejo
+
+    extraVolumes:
+      - name: signing-key
+        secret:
+          secretName: forgejo-signing-key
+          defaultMode: 0o400
+    extraInitVolumeMounts:
+      - name: signing-key
+        mountPath: /data/signing
+        readOnly: true
+    extraContainerVolumeMounts:
+      - name: signing-key
+        mountPath: /data/signing
+        readOnly: true
+
+  valuesFrom:
+    - kind: Secret
+      name: &secret forgejo-secrets
+      valuesKey: POSTGRESQL_PASSWORD
+      targetPath: gitea.config.database.PASSWD

@@ -1,0 +1,72 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.envoyproxy.io/envoyproxy_v1alpha1.json
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: envoy
+spec:
+  logging:
+    level:
+      default: info
+      # coraza-proxy-wasm emits per-request "Started/Finished tx_id" lines at
+      # info; the WAF's real output is the JSON audit log on stdout, so quiet
+      # the wasm runtime logger to warn.
+      wasm: warn
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: 2
+        container:
+          imageRepository: mirror.gcr.io/envoyproxy/envoy
+          resources:
+            requests:
+              cpu: 100m
+            limits:
+              memory: 2Gi
+              ephemeral-storage: 200Mi
+  shutdown:
+    drainTimeout: 180s
+  telemetry:
+    metrics:
+      prometheus:
+        compression:
+          type: Zstd
+    # Envoy Gateway's built-in JSON access log carries no request path and no
+    # port-stripped client IP, which makes any L7 analysis or IPS detection
+    # impossible (you cannot tell *what* is being scraped, only how much). This
+    # restates EG's default field set verbatim and adds `path` + `client_ip`, so
+    # it is a strict superset — existing Loki queries and dashboards keep working.
+    # NOTE: `envoy-towonel` has its own EnvoyProxy and does NOT inherit this.
+    # Keep the two formats identical; gateway-towonel.yaml carries the same block.
+    accessLog:
+      settings:
+        - format:
+            type: JSON
+            json:
+              start_time: "%START_TIME%"
+              method: "%REQ(:METHOD)%"
+              path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+              client_ip: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
+              protocol: "%PROTOCOL%"
+              response_code: "%RESPONSE_CODE%"
+              response_flags: "%RESPONSE_FLAGS%"
+              response_code_details: "%RESPONSE_CODE_DETAILS%"
+              connection_termination_details: "%CONNECTION_TERMINATION_DETAILS%"
+              upstream_transport_failure_reason: "%UPSTREAM_TRANSPORT_FAILURE_REASON%"
+              bytes_received: "%BYTES_RECEIVED%"
+              bytes_sent: "%BYTES_SENT%"
+              duration: "%DURATION%"
+              upstream_cluster: "%UPSTREAM_CLUSTER%"
+              upstream_host: "%UPSTREAM_HOST%"
+              upstream_local_address: "%UPSTREAM_LOCAL_ADDRESS%"
+              downstream_local_address: "%DOWNSTREAM_LOCAL_ADDRESS%"
+              downstream_remote_address: "%DOWNSTREAM_REMOTE_ADDRESS%"
+              requested_server_name: "%REQUESTED_SERVER_NAME%"
+              route_name: "%ROUTE_NAME%"
+              user-agent: "%REQ(USER-AGENT)%"
+              ":authority": "%REQ(:AUTHORITY)%"
+          sinks:
+            - type: File
+              file:
+                path: /dev/stdout

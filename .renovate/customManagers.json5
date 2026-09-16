@@ -1,0 +1,185 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  customManagers: [
+    {
+      customType: 'regex',
+      description: 'Process CRD dependencies',
+      managerFilePatterns: [
+        '/crds/.+\\.ya?ml$/',
+      ],
+      matchStrings: [
+        'registryUrl=(?<registryUrl>\\S+) chart=(?<depName>\\S+)\n.*?(?<currentValue>[^-\\s]*)\n',
+        'datasource=(?<datasource>\\S+) image=(?<depName>\\S+)\n.*?-\\s(.*?)/(?<currentValue>[^/]+)/[^/]+\n',
+      ],
+      datasourceTemplate: '{{#if datasource}}{{{datasource}}}{{else}}helm{{/if}}',
+    },
+    {
+      customType: 'regex',
+      description: 'Process various other dependencies',
+      managerFilePatterns: [
+        '/ansible/.+\\.ya?ml$/',
+        '/.+\\.ya?ml$/',
+      ],
+      matchStrings: [
+        'datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\n.*?\"(?<currentValue>.*)\"\n',
+      ],
+      datasourceTemplate: '{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}',
+      versioningTemplate: '{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}',
+    },
+
+    {
+      customType: "regex",
+      description: "Process OCI dependencies",
+      managerFilePatterns: ["/\\.yaml(?:\\.j2)?$/"],
+      matchStrings: [
+        // inline form: `url: oci://registry/repo:tag`
+        "oci://(?<registryUrl>[^/]+)/(?<depName>[^:]+):(?<currentValue>\\S+)",
+        // Flux OCIRepository split form: `url: oci://registry/repo` + a separate
+        // `ref:` block holding `tag:`. The inline regex above cannot see this shape,
+        // which is why pinned OCIRepository charts (e.g. cilium) never got a Renovate
+        // PR despite the flux manager being on. All 41 in-repo OCIRepositories use the
+        // ref-before-url order; the url-before-ref mirror is included because the Flux
+        // docs write it that way and nothing stops a future file from doing so.
+        //
+        // `tag:` is NOT required to sit immediately under `ref:` — cilium keeps a
+        // multi-line CVE comment in between — so the gap is spanned by
+        // `(?:[ \t]+[^\n]*\n)*?`: lazily skip *indented* lines only. Requiring leading
+        // whitespace means a column-0 line (`---`, `apiVersion:`) or a blank line ends
+        // the skip, which keeps a match from straddling two YAML documents. Anchoring
+        // each key as `\n[ \t]+<key>` also stops `chartRef:` in the sibling HelmRelease
+        // from being read as `ref:` and pairing with an unrelated image `tag:` in values.
+        "\\n[ \\t]+ref:\\n(?:[ \\t]+[^\\n]*\\n)*?[ \\t]+tag: (?<currentValue>\\S+)\\n(?:[ \\t]+[^\\n]*\\n)*?[ \\t]+url: oci://(?<registryUrl>[^/]+)/(?<depName>[^\\s:]+)",
+        "\\n[ \\t]+url: oci://(?<registryUrl>[^/]+)/(?<depName>[^\\s:]+)\\n(?:[ \\t]+[^\\n]*\\n)*?[ \\t]+ref:\\n(?:[ \\t]+[^\\n]*\\n)*?[ \\t]+tag: (?<currentValue>\\S+)",
+      ],
+      datasourceTemplate: "docker",
+      registryUrlTemplate: "https://{{{registryUrl}}}",
+    },
+
+    {
+      // CloudNativePG pins its Postgres image in `spec.imageName`, which no built-in
+      // manager reads (the kubernetes manager only looks at `image:` in pod specs), so
+      // these rot silently — the default cluster sat on postgresql:16.1-13 for ~2 years.
+      // Matched repo-wide rather than by path: `imageName:` is CNPG-specific, and the
+      // clusters live under both apps/default/cloudnative-pg and per-app database dirs.
+      // The leading `\n\s+` anchors to a real YAML key so commented-out alternatives
+      // (`# imageName: ...`, kept as migration notes next to immich's cluster) stay ignored.
+      customType: "regex",
+      description: "Process CloudNativePG cluster images",
+      managerFilePatterns: ["/\\.yaml(?:\\.j2)?$/"],
+      matchStrings: ["\\n\\s+imageName: (?<depName>\\S+):(?<currentValue>\\S+)"],
+      datasourceTemplate: "docker",
+    },
+
+
+    // {
+    //   "customType": "regex",
+    //   "fileMatch": [
+    //     '/.+\\.ya?ml$/',
+    //     "(^|/)system-upgrade/.*\\.yaml$"
+    //   ],
+    //   "matchStrings": [
+    //     "version: (?<currentValue>.+)"
+    //   ],
+    //   "depNameTemplate": "k3s-io/k3s",
+    //   "datasourceTemplate": "github-releases"
+    // },
+    // {
+    //   customType: 'regex',
+    //   description: 'Process various other dependencies',
+    //   managerFilePatterns: [
+    //     '/ansible/.+\\.ya?ml$/',
+    //     '/.+\\.ya?ml$/',
+    //   ],
+    //   matchStrings: [
+    //     'datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\n.*?"(?<currentValue>.*)"\n',
+    //   ],
+    //   datasourceTemplate: '{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}',
+    //   versioningTemplate: '{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}',
+    // },
+
+
+    // {
+    //   customType: "regex",
+    //   description: "Process annotated dependencies",
+    //   managerFilePatterns: [
+    //     "/\\.env(?:\\.j2)?$/",
+    //     "/\\.sh(?:\\.j2)?$/",
+    //     "/\\.yaml(?:\\.j2)?$/",
+    //   ],
+    //   matchStrings: [
+    //     // # renovate: datasource=github-releases depName=foo/bar
+    //     // foobar_version: v1.0.0
+    //     // # renovate: datasource=docker depName=ghcr.io/foo/bar
+    //     // FOOBAR_VERSION=v1.0.0
+    //     "datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n.+(:\\s|=)(&\\S+\\s)?(?<currentValue>\\S+)",
+    //   ],
+    //   datasourceTemplate: "{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}",
+    // },
+    // {
+    //   customType: "regex",
+    //   description: "Process OCI dependencies",
+    //   managerFilePatterns: [
+    //     "/\\.yaml(?:\\.j2)?$/",
+    //   ],
+    //   matchStrings: [
+    //     "oci://(?<depName>[^:]+):(?<currentValue>\\S+)",
+    //   ],
+    //   datasourceTemplate: "docker",
+    // },
+    // {
+    //   "customType": "regex",
+    //   "description": ["Process custom dependencies"],
+    //   "managerFilePatterns": [
+    //     "/(^|/).taskfiles/.+\\.sh$/",
+    //     "/(^|/).taskfiles/.+\\.ya?ml$/",
+    //     "/(^|/)ansible/.+\\.ya?ml(\\.j2)?$/",
+    //     "/(^|/)apps/.+\\.ya?ml(\\.j2)?$/",
+    //     "/(^|/)core/.+\\.ya?ml(\\.j2)?$/",
+    //     "/(^|/).+\\.md$/"
+    //   ],
+    //   "matchStrings": [
+    //     // Example: `k3s_release_version: "v1.27.3+k3s1"`
+    //     // "datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\n.*?\"(?<currentValue>.*)\"\n",
+    //     // Example: `- https://github.com/rancher/system-upgrade-controller/releases/download/v0.11.0/crd.yaml`
+    //     //          `- https://github.com/argoproj/argo-cd/raw/v2.7.10/manifests/install.yaml`
+    //     //          `- https://github.com/argoproj/argo-cd/raw/v2.7.10/manifests/ha/install.yaml`
+    //     //          `- https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/21.1.1/kubernetes/kubernetes.yml`
+    //     "datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\n.*?-\\s(.*?)\/(?<currentValue>(v|\\d)[^/]+)\/\\S+\n",
+    //     // # renovate: datasource=github-releases depName=k3s-io/k3s
+    //     // k3s_release_version: &version v1.29.0+k3s1
+    //     // # renovate: datasource=helm depName=cilium repository=https://helm.cilium.io
+    //     // version: 1.15.1
+    //     // # renovate: datasource=docker depName=ghcr.io/siderolabs/kubelet
+    //     // KUBERNETES_VERSION=v1.31.1
+    //     "datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( repository=(?<registryUrl>\\S+))?\\n.+(:\\s|=)(&\\S+\\s)?(?<currentValue>\\S+)",
+    //   ],
+    //   "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}",
+    //   "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
+    // },
+
+    // {
+    //   "customType": "regex",
+    //   "fileMatch": ["k3s.version"],
+    //   "matchStrings": ["(?<currentValue>\\S+)"],
+    //   "depNameTemplate": "k3s",
+    //   "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?<compatibility>\\+k3s)(?<build>\\d+)$",
+    //   "datasourceTemplate": "custom.k3s"
+    // }
+  ],
+  // "customDatasources": {
+  //   "k3s": {
+  //     "defaultRegistryUrlTemplate": "https://update.k3s.io/v1-release/channels",
+  //     "transformTemplates": [
+  //       "{\"releases\":[{\"version\": $$.(data[id = 'stable'].latest),\"sourceUrl\":\"https://github.com/k3s-io/k3s\",\"changelogUrl\":$join([\"https://github.com/k3s-io/k3s/releases/tag/\",data[id = 'stable'].latest])}],\"sourceUrl\": \"https://github.com/k3s-io/k3s\",\"homepage\": \"https://k3s.io/\"}"
+  //     ]
+  //   }
+  // }
+//   "packageRules": [
+//     {
+//       "matchDatasources": ["github-releases"],
+//       "matchPackageNames": ["k3s-io/k3s"],
+//       "separateMinorPatch": true,
+//       "versioning": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?<compatibility>\\+k3s)(?<build>\\d+)$"
+//     },
+//   ]
+}

@@ -1,0 +1,92 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/virtualmcpserver_v1beta1.json
+# Single replica by design: the embedding index is in-process, so two replicas
+# would each embed independently and tools might route differently per-replica
+# (non-deterministic tool selection). Run one and rely on the dragonfly session
+# store for MCP session affinity rather than pod stickiness.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: VirtualMCPServer
+metadata:
+  name: unified
+spec:
+  replicas: 1
+  podTemplateSpec:
+    spec:
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: vmcp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          env:
+            - name: TMPDIR
+              value: /tmp
+            # LiteLLM is the OpenAI-compatible embedding proxy; this key
+            # authenticates the VMCP embedding requests.
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-secrets
+                  key: LITELLM_API_KEY
+          resources:
+            requests:
+              cpu: 200m
+              memory: 1Gi
+            limits:
+              memory: 2Gi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            failureThreshold: 30
+            periodSeconds: 5
+            initialDelaySeconds: 0
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            failureThreshold: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+              scheme: HTTP
+            failureThreshold: 3
+            periodSeconds: 10
+  sessionStorage:
+    provider: redis
+    address: toolhive-dragonfly.ai.svc.cluster.local:6379
+    keyPrefix: "thv:vmcp:unified:session:"
+  incomingAuth:
+    type: oidc
+    # MCPOIDCConfig: Authentik issuer + JWKS-based JWT validation (oidcconfig.yaml)
+    oidcConfigRef:
+      name: toolhive-oidc
+      # audience must match the "aud" claim in tokens issued by Authentik.
+      # Configure an Authentik scope or property mapping that sets aud to this URL.
+      audience: "https://mcp.${SECRET_INTERNAL_DOMAIN}"
+    # MCPAuthzConfig: Cedar deny-by-default, per-group tool allowlist (authzconfig.yaml)
+    authzConfigRef:
+      name: toolhive-authz
+  groupRef:
+    name: all
+  config:
+    operational:
+      timeouts:
+        # Bumped from the 30s default: embedding can be slower on cold start.
+        default: &embeddingTimeout 120s
+      failureHandling:
+        # The Actual MCP bridge allocates a session for each generic health
+        # probe and retires it asynchronously. Five minutes keeps monitoring
+        # useful without filling its 15-session pool.
+        healthCheckInterval: 5m
+        healthCheckTimeout: 20s
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"

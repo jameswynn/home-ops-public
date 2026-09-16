@@ -1,0 +1,40 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: grafana
+  namespace: &namespace monitoring
+spec:
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  targetNamespace: *namespace
+  path: ./core/monitoring/grafana/app
+  prune: true
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: grafana-instance
+  namespace: &namespace monitoring
+spec:
+  dependsOn:
+    - name: grafana
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  targetNamespace: *namespace
+  path: ./core/monitoring/grafana/instance
+  prune: true
+  wait: false
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system

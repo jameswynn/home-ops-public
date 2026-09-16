@@ -1,0 +1,18 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gotosocial-data
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # Headroom for the 0.22 status-bitfield migration (WAL growth) and the
+      # VACUUM afterwards. The sqlite.db is ~9.3G with no reclaimable free
+      # pages, so a VACUUM needs roughly that much again as scratch.
+      storage: 25Gi
+  storageClassName: longhorn
+  volumeMode: Filesystem
+  volumeName: gotosocial-data

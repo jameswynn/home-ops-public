@@ -1,0 +1,69 @@
+# When "1" all DNS entries with IP address of DHCP lease are removed
+:local dnsRemoveAllByIp "${dns_remove_all_by_ip}"
+# When "1" all DNS entries with hostname of DHCP lease are removed
+:local dnsRemoveAllByName "${dns_remove_all_by_name}"
+# When "1" addition and removal of DNS entries is always done also for non-FQDN hostname
+:local dnsAlwaysNonfqdn "${dns_always_nonfqdn}"
+# DNS domain to add after DHCP client hostname
+:local dnsDomain "${dns_domain}"
+# DNS TTL to set for DNS entries
+:local dnsTtl "${dns_ttl}"
+# Source of DHCP client hostname, can be "lease-hostname" or any other lease attribute, like "host-name" or "comment"
+:local leaseClientHostnameSource "${hostname_source}"
+
+:local leaseComment "dhcp-lease-script_$leaseServerName_$leaseClientHostnameSource"
+:local leaseClientHostname
+
+:local actionVerb "ADD"
+
+:if ($leaseBound = "1") do={
+  :set actionVerb "DEL"
+}
+
+# It seems add and delete trigger at nearly the same time, so add a delay to hopefully make the add happen second
+:if ($leaseBound = "1") do={
+  :delay 2
+}
+
+:if ($leaseClientHostnameSource = "lease-hostname") do={
+  :set leaseClientHostname $"lease-hostname"
+} else={
+  :set leaseClientHostname ([:pick \
+    [/ip dhcp-server lease print as-value where server="$leaseServerName" address="$leaseActIP" mac-address="$leaseActMAC"] \
+      0]->"$leaseClientHostnameSource")
+${log}  :log info "$leaseActMAC - $actionVerb - trying $leaseClientHostname"
+  :if ([:len [$leaseClientHostname]] = 0) do={
+    :set leaseClientHostname ("mac-".[:pick $leaseActMAC 0 2].[:pick $leaseActMAC 3 5].[:pick $leaseActMAC 6 8].[:pick $leaseActMAC 9 11].[:pick $leaseActMAC 12 14].[:pick $leaseActMAC 15 17])
+${log}    :log info "$leaseActMAC - $actionVerb - was blank, trying $leaseClientHostname"
+  }
+}
+:local leaseClientHostnames "$leaseClientHostname"
+:if ([:len [$dnsDomain]] > 0) do={
+  :if ($dnsAlwaysNonfqdn = "1") do={
+    :set leaseClientHostnames "$leaseClientHostname.$dnsDomain,$leaseClientHostname"
+  } else={
+    :set leaseClientHostnames "$leaseClientHostname.$dnsDomain"
+  }
+}
+:if ($dnsRemoveAllByIp = "1") do={
+${log}  :log info "$leaseActMAC - $actionVerb - removing old dns by IP"
+  /ip dns static remove [/ip dns static find comment="$leaseComment" and address="$leaseActIP"]
+}
+:foreach h in=[:toarray value="$leaseClientHostnames"] do={
+  :if ($dnsRemoveAllByName = "1") do={
+${log}    :log info "$leaseActMAC - $actionVerb - removing old dns by name - $h - and comment - $leaseComment"
+    /ip dns static remove [/ip dns static find comment="$leaseComment" and name="$h"]
+  }
+${log}  :log info "$leaseActMAC - $actionVerb - removing old dns by IP - $leaseActIP"
+  /ip dns static remove [/ip dns static find comment="$leaseComment" and address="$leaseActIP" and name="$h"]
+  :if ($leaseBound = "1") do={
+    :delay 1
+${log}    :log info "$leaseActMAC - $actionVerb - adding new dns - $leaseComment - $leaseActIP - $h"
+   if ([:len [$h]] > 0) {
+      /ip dns static add comment="$leaseComment" address="$leaseActIP" name="$h" ttl="$dnsTtl"
+    } else= {
+      :log error "$leaseActMAC - not creating DNS entry as derived hostname is empty"
+    }
+  }
+}
+

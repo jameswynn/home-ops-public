@@ -1,0 +1,152 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app memini
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: *app
+  maxHistory: 3
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    controllers:
+      main:
+        # deployment, not the chart's default statefulset: that default exists
+        # for the sqlite backend's RWO PVC, which we do not use.
+        type: deployment
+        replicas: 1
+        annotations:
+          reloader.stakater.com/auto: "true"
+        containers:
+          main:
+            # No `image:` block on purpose — the chart pins the image by digest
+            # and the OCIRepository tag is the only version knob. See
+            # ocirepository.yaml.
+            env:
+              TZ: ${CLUSTER_TZ}
+              MEMINI_BACKEND: postgres
+              MEMINI_LOG_FORMAT: json
+              MEMINI_DEFAULT_NAMESPACE: home-ops
+
+              # --- embeddings (hard dependency: remember/recall error without it) ---
+              # Served through the litellm proxy (model bge-m3, added to litellm's
+              # model_config.yaml), which fronts ollama (bge-m3 pulled 2026-08-17).
+              # DIMS must equal what the served model actually emits — bge-m3 is
+              # 1024. A mismatch corrupts the store instead of erroring, so
+              # changing the model here means changing DIMS *and* litellm config.
+              MEMINI_EMBED_BASE_URL: http://litellm.ai.svc.cluster.local:4000/v1
+              MEMINI_EMBED_MODEL: bge-m3
+              MEMINI_EMBED_DIMS: "1024"
+              MEMINI_EMBED_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: MEMINI_EMBED_API_KEY
+              # bge-m3 has an 8192-token window (~24k chars) — far past the
+              # 512-token limit of bge-small-en-v1.5 this replaced, so the
+              # chart's 8000-char default is fine; chunking still helps recall
+              # on very long memories.
+              # Chunked embedding puts the truncated tail back in reach: long
+              # memories are additionally embedded in overlapping segments, so
+              # recall can still land on text past the window.
+              MEMINI_CHUNK_EMBED: "true"
+              MEMINI_CHUNK_SIZE: "1200"
+              MEMINI_CHUNK_OVERLAP: "200"
+
+              # --- postgres backend ---
+              # CNPG writes this Secret when the Cluster bootstraps; `uri` is a
+              # full DSN pointing at memini-postgres-rw.
+              MEMINI_POSTGRES_DSN:
+                valueFrom:
+                  secretKeyRef:
+                    name: memini-postgres-app
+                    key: uri
+
+              # --- auth ---
+              # Break-glass admin credential; also what turns bearer auth on for
+              # /v1 and /mcp. Required before the routes below are reachable.
+              MEMINI_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: MEMINI_API_KEY
+            # No CPU limit (repo-wide convention); memory request == limit.
+            # 25m is the floor for a workload with no observed p95 yet — resize
+            # once it has a week of Prometheus history.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 512Mi
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 512Mi
+                ephemeral-storage: 500Mi
+
+    # The chart's sqlite PVC. The postgres backend keeps nothing on disk.
+    persistence:
+      data:
+        enabled: false
+      tmpfs:
+        type: emptyDir
+        sizeLimit: 64Mi
+        globalMounts:
+          - path: /tmp
+
+    serviceMonitor:
+      main:
+        enabled: true
+
+    route:
+      # API + MCP. Internal gateway only (LAN + tailnet), never the external
+      # one: this is bearer-gated by MEMINI_API_KEY but a key is identity, not
+      # isolation — any valid key can read any namespace.
+      main:
+        enabled: true
+        annotations:
+          # memini serves nothing at "/" on this port (the UI is on `ui`), so
+          # the sidecar's default root probe would 404 forever. Probe /healthz,
+          # which is unauthenticated.
+          gatus.home-operations.com/endpoint: |-
+            url: https://${APP}.${SECRET_INTERNAL_DOMAIN}/healthz
+            conditions: ["[STATUS] == 200"]
+        hostnames:
+          - "${APP}.${SECRET_INTERNAL_DOMAIN}"
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+        rules:
+          - backendRefs:
+              - identifier: main
+                port: http
+      # Admin SPA. Credential-free shell, but a signed-in token lives in
+      # localStorage and is same-origin readable — internal gateway only.
+      ui:
+        enabled: true
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "memini"
+          gethomepage.dev/description: "Shared agent memory"
+          gethomepage.dev/group: "AI"
+          gethomepage.dev/icon: mdi-brain
+          gethomepage.dev/weight: "151"
+          gethomepage.dev/pod-selector: "app.kubernetes.io/name = ${APP}"
+        hostnames:
+          - "${APP}-ui.${SECRET_INTERNAL_DOMAIN}"
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+        rules:
+          - backendRefs:
+              - identifier: main
+                port: ui

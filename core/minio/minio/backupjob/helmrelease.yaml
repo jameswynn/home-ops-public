@@ -1,0 +1,153 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: minio-backup
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  interval: 30m
+  values:
+    controllers:
+      minio-backup-longhorn:
+        type: cronjob
+
+        cronjob:
+          # 6 AM local (11:00 UTC) — no spec.timeZone, so the schedule is read in
+          # the controller-manager's local time (America/Chicago).
+          #
+          # This slot has to stay after the 0 1 longhorn backup RecurringJob, so
+          # the mirror picks up the same night's replica backups. It must also
+          # stay >=1h clear of longhorn's filesystem-trim (moved to 0 8): the two
+          # used to share this slot, and the combined I/O stalled etcd commits up
+          # to 4s on muspelheim, dropping the k3s leader-election lease.
+          schedule: '0 6 * * *'
+          successfulJobsHistory: 3
+          backoffLimit: 0
+          concurrencyPolicy: Forbid
+          failedJobsHistory: 3
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+
+        containers:
+          app:
+            image:
+              repository: quay.io/minio/mc
+              tag: RELEASE.2025-08-13T08-35-41Z
+            command:
+              - /bin/bash
+              - /minio/backup.sh
+              - nas-longhorn/longhorn
+              - b2-longhorn/wynn-longhorn
+            env:
+              MC_CONFIG_DIR: /minio
+            probes:
+              liveness:
+                enabled: false
+              readiness:
+                enabled: false
+              startup:
+                enabled: false
+            # CPU from the last 7d of runs (3 runs, ~22m each): p50 50.7m,
+            # p95 174.4m, max 177.7m. Flat profile — the mirror to B2 is
+            # network-bound, so it sits at ~175m for the whole run rather than
+            # spiking, and 250m clears the observed max without reserving a
+            # quarter-core more than the job can use. No CPU limit, per the
+            # cluster convention: a nightly backup should finish as fast as
+            # the node allows.
+            resources:
+              requests:
+                memory: 200Mi
+                cpu: 250m
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 2000Mi
+                ephemeral-storage: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+
+      minio-backup-postgres:
+        type: cronjob
+
+        cronjob:
+          # 7 AM local (12:00 UTC). ~3m of work on a small dataset, so it sits
+          # happily between the longhorn mirror at 0 6 and the trim at 0 8.
+          schedule: '0 7 * * *'
+          successfulJobsHistory: 3
+          backoffLimit: 0
+          concurrencyPolicy: Forbid
+          failedJobsHistory: 3
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+
+        containers:
+          app:
+            image:
+              repository: quay.io/minio/mc
+              tag: RELEASE.2025-08-13T08-35-41Z
+            command:
+              - /bin/bash
+              - /minio/backup.sh
+              - nas-postgres/postgresql
+              - b2-postgres/wynn-postgres
+            env:
+              MC_CONFIG_DIR: /minio
+            probes:
+              liveness:
+                enabled: false
+              readiness:
+                enabled: false
+              startup:
+                enabled: false
+            # CPU from the last 7d of runs (3 runs, ~3m each): p50 4.9m,
+            # p95 7.8m, max 7.8m. Far smaller dataset than the longhorn
+            # backup, so it barely registers. 25m is the practical request
+            # floor. No CPU limit, per the cluster convention.
+            resources:
+              requests:
+                memory: 200Mi
+                cpu: 25m
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 2000Mi
+                ephemeral-storage: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+
+    persistence:
+      minio:
+        enabled: true
+        type: emptyDir
+        sizeLimit: 200Mi
+      script:
+        enabled: true
+        name: minio-backup
+        type: configMap
+        globalMounts:
+          - path: /minio/backup.sh
+            subPath: backup.sh
+            readOnly: true
+      config:
+        enabled: true
+        name: minio-backup
+        type: secret
+        globalMounts:
+          - path: /minio/config.json
+            subPath: config.json
+            readOnly: true

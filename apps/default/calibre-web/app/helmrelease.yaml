@@ -1,0 +1,143 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: calibre-web
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 3
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    defaultPodOptions:
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
+        seccompProfile: { type: RuntimeDefault }
+    controllers:
+      main:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        # pod:
+        #   securityContext:
+        #     runAsUser: 1000
+        #     runAsGroup: 1000
+        #     fsGroup: 1000
+        #     runAsNonRoot: false
+        #     fsGroupChangePolicy: OnRootMismatch
+        containers:
+          main:
+            image:
+              repository: ghcr.io/crocodilestick/calibre-web-automated
+              tag: V3.1.4@sha256:577e846f104fd21453ef306eefb4a95dd95b3b9ddd2463a150944494284da0fd
+              # repository: ghcr.io/jameswynn/calibre-web-automated-rootless
+              # tag: latest
+              # pullPolicy: Always
+            env:
+              CACHE_DIR: /cache
+              CALIBRE_PORT: &port 8083
+              PUID: 1000
+              PGID: 1000
+              # Skips/soft fail on privileged actions that shouldn't exist anyways
+              NETWORK_SHARE_MODE: true
+              S6_YES_I_WANT_A_WORLD_WRITABLE_RUN_BECAUSE_KUBERNETES: 1
+              S6_READ_ONLY_ROOT: 1
+            securityContext:
+              allowPrivilegeEscalation: true
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+                add:
+                  # S6
+                  - CHOWN
+                  - SETUID
+                  - SETGID
+                  - FOWNER
+                  - DAC_OVERRIDE
+            probes:
+              liveness: &probes
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    port: *port
+                    path: /login
+              readiness: *probes
+            # CPU from 7d of Prometheus data: p50 4m, p95 5m, max 53m. 25m is
+            # the practical request floor. No CPU limit, per the cluster
+            # convention — ebook conversion should be allowed to burst.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 256M
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 1Gi
+                ephemeral-storage: 500Mi
+    service:
+      main:
+        controller: main
+        ports:
+          http:
+            port: *port
+
+    route:
+      app:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "Calibre-Web"
+          gethomepage.dev/description: "Book Management"
+          gethomepage.dev/group: "Media"
+          gethomepage.dev/icon: "calibre-web.png"
+          gethomepage.dev/weight: "100"
+          internal.wynning.tech/hostname: &host "{{ .Release.Name }}.${SECRET_INTERNAL_DOMAIN}"
+        hostnames:
+          - *host
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+
+    persistence:
+      config:
+        enabled: true
+        existingClaim: "${APP}"
+        advancedMounts:
+          main:
+            main:
+              - path: /config
+      media:
+        enabled: true
+        type: nfs
+        server: ${SECRET_NAS_URL}
+        path: /volume1/media
+        globalMounts:
+          - path: /calibre-library
+            subPath: books
+            # readOnly: true
+          - path: /cwa-book-ingest
+            subPath: calibre-web-ingest
+
+      tmpfs:
+        type: emptyDir
+        sizeLimit: 2Gi
+        globalMounts:
+          - path: /cache
+            subPath: cache
+          - path: /tmp
+            subPath: tmp
+          - path: /run
+            subPath: run

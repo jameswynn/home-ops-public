@@ -1,0 +1,306 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app ghostrecon
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  interval: 1h
+  values:
+    controllers:
+      ghostrecon:
+        type: deployment
+        # One replica, and Recreate rather than RollingUpdate.
+        #
+        # The scheduler runs each reconcile inline on a single thread specifically
+        # so runs cannot overlap — that is a property of the process, not a lock, so
+        # a second pod defeats it. Two reconcilers racing on one plan directory
+        # write into the same dated folder, and with `auto-apply` on they both
+        # import. RollingUpdate would briefly run two for the same reason.
+        replicas: 1
+        strategy: Recreate
+        annotations:
+          # Rolls the pod when either Secret changes, which is the only way a
+          # config edit takes effect — config.yaml is read once at startup.
+          reloader.stakater.com/auto: "true"
+        pod:
+          securityContext:
+            # The uid/gid baked into the image. The Dockerfile fixes it high and
+            # explicitly so ownership of the mounted volume is predictable.
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            # Makes the PVC writable by that uid without an initContainer.
+            fsGroup: 10001
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          # SIGTERM stops scheduling, lets an in-flight run finish, flushes metrics
+          # and exits 0. `run-timeout-secs` is 1800, so anything shorter than that
+          # risks SIGKILL part-way through an apply — survivable (applied.json is
+          # written even on failure) but pointlessly so.
+          terminationGracePeriodSeconds: 1830
+        containers:
+          app:
+            image:
+              repository: forge.wynning.tech/james/ghostrecon # {"$imagepolicy": "ghostfolio:ghostrecon:name"}
+              tag: v0.0.1 # {"$imagepolicy": "ghostfolio:ghostrecon:tag"}
+              pullPolicy: IfNotPresent
+            # The one setting here that is load-bearing rather than conventional.
+            #
+            # The config path is a constant — `const CONFIG_PATH: &str =
+            # "config.yaml"` — resolved against the working directory, and there is
+            # no flag to override it. The image's WORKDIR is /data, which here is
+            # the writable volume rather than the config one, so the container has
+            # to be pointed at /config instead.
+            workingDir: /config
+            # Arguments replace the image's CMD and leave its ENTRYPOINT, so this
+            # restates the default command rather than adding to it.
+            #
+            # Order matters: `--log-format` is a top-level flag and must precede the
+            # subcommand, while `--metrics-bind` belongs to `service`. Getting it
+            # backwards fails at pod start, not at `helm template`.
+            args:
+              - --log-format
+              - json
+              - service
+              - --metrics-bind
+              - 0.0.0.0:9464
+            env:
+              # Absolute, so they do not resolve against workingDir. Both live on
+              # the PVC below; nothing else in the container is written to.
+              OUTPUT_DIR: /data/output
+              CACHE_DIR: /data/cache
+              # In-namespace, so this stays correct if netpols.yaml is ever
+              # uncommented — that policy already allows intra-namespace ingress.
+              # Include the /api/v1 suffix: the client appends paths verbatim.
+              GHOSTFOLIO_API_URL: http://ghostfolio.ghostfolio.svc.cluster.local:3333/api/v1
+              # Only read because config.yaml configures a `realestate` provider.
+              RAPIDAPI_HOST: realtor16.p.rapidapi.com
+              # NOT RUST_LOG. The filter is bound to GHOSTRECON_LOG, and setting it
+              # replaces the -v/-q level rather than layering on top of it.
+              GHOSTRECON_LOG: ghostrecon=info
+              # 5 minutes, up from the 60s default. SimpleFIN fans one request
+              # out across every linked institution, so get_accounts is a single
+              # slow call rather than many quick ones — three of the four daily
+              # runs from 2026-08-03 to 08-06 failed on `simplefin get_accounts
+              # failed (timeout)`. The window is not the cause: the request asks
+              # for exactly the configured 30 days.
+              #
+              # Safe against the run budget, which is what would otherwise limit
+              # this: run-timeout-secs is 1800 and terminationGracePeriodSeconds
+              # is 1830, so a request that burns its full budget still leaves
+              # room for the rest of the run. Raise those two first if this ever
+              # needs to go beyond ~25 minutes.
+              SIMPLEFIN_TIMEOUT_SECS: "300"
+              # Mail when an unattended run needs attention. This is the delivery
+              # that does not assume Prometheus, and it matters here specifically
+              # because auto-apply is on: a tripped safeguard leaves the process
+              # healthy, /healthz green and plans still being written, while
+              # nothing at all is being applied. Triggers are run_failed,
+              # apply_blocked and gave_up — not data issues, which happen most
+              # ticks.
+              #
+              # Presence of the host is what turns it on, and half-configured is
+              # a startup error rather than silence after the first failure that
+              # should have mailed.
+              #
+              # Same relay every other app in this repo uses: the maddy instance
+              # in comms. Plaintext on 25 with no auth is correct rather than
+              # lazy — `tls off` and no auth block is what its maddy.conf
+              # actually serves, and it is the relay that does STARTTLS and
+              # authenticates on the outbound leg to the real provider. So no
+              # GHOSTRECON_SMTP_USERNAME, and no GHOSTRECON_SMTP_PASSWORD in the
+              # Secret.
+              GHOSTRECON_SMTP_HOST: smtp.comms.svc.cluster.local
+              GHOSTRECON_SMTP_PORT: "25"
+              GHOSTRECON_SMTP_TLS: none
+              GHOSTRECON_SMTP_FROM: no-reply@${SECRET_ROOT_DOMAIN}
+              GHOSTRECON_SMTP_TO: ${SECRET_ADMIN_EMAIL}
+              # Explicit, not inherited. It is the upstream default today, but it
+              # is the setting that decides whether account names and dollar
+              # figures leave the cluster — these messages transit the relay out
+              # to an external provider and land in a mailbox and its backups.
+              # docs/metrics.md refuses to export monetary amounts for the same
+              # reason. `summary` names the safeguard and the plan path; open the
+              # plan for the numbers.
+              GHOSTRECON_SMTP_DETAIL: summary
+              # GHOSTRECON_SMTP_TIMEOUT_SECS defaults to 10, which is generous
+              # for a ClusterIP one namespace away. It is short on purpose: this
+              # runs inside a tick, reporting something that has already gone
+              # wrong, so blocking the tick on an unresponsive relay only makes
+              # it worse. A failed send is logged, counted and carries on — it
+              # never fails the run.
+              # Deliberately no OTEL_EXPORTER_OTLP_*: service mode exports through
+              # the scrape endpoint below and never reads them.
+            envFrom:
+              # SIMPLEFIN_ACCESS_URL, GHOSTFOLIO_API_TOKEN, RAPIDAPI_KEY. Separate
+              # from the config Secret because envFrom turns every key into an
+              # environment variable, and config.yaml is a file.
+              - secretRef:
+                  name: *app
+            # Written as `custom` probes rather than the chart's shorthand form. The
+            # shorthand renders to nothing at all when it cannot resolve a primary
+            # service port, so a mistake there produces a pod with no probes instead
+            # of an error.
+            #
+            # Neither health endpoint consults SimpleFIN or Ghostfolio, by design: a
+            # red /healthz during someone else's outage would have Kubernetes
+            # restart-loop this pod through an incident it cannot affect.
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: 9464
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /readyz
+                    port: 9464
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              # /readyz answers 503 until config has parsed, the schedule has
+              # resolved and the metrics server has bound. That is fast, but it is
+              # also where a bad config.yaml surfaces, so give it room to fail
+              # visibly rather than being killed and retried as a liveness failure.
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /readyz
+                    port: 9464
+                  periodSeconds: 5
+                  failureThreshold: 30
+            securityContext:
+              allowPrivilegeEscalation: false
+              # Nothing is written outside OUTPUT_DIR and CACHE_DIR — no temporary
+              # files anywhere in the crate — so the rest of the filesystem can be
+              # read-only.
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - "ALL"
+            resources:
+              requests:
+                cpu: 10m
+                memory: 64Mi
+                ephemeral-storage: 100Mi
+              limits:
+                # No CPU limit: a reconcile fans holdings requests out across a
+                # rayon pool, and throttling it only stretches the run toward the
+                # scheduling interval.
+                memory: 256Mi
+                ephemeral-storage: 100Mi
+    service:
+      metrics:
+        controller: ghostrecon
+        # One port carries all of it: /metrics, the two health routes, and /api/v1
+        # (the last only because GHOSTRECON_API_TOKEN is set in the Secret — with
+        # no token those routes answer 404, not 401). Still named `metrics`
+        # because serviceMonitor below names that identifier.
+        type: ClusterIP
+        ports:
+          metrics:
+            port: 9464
+            primary: true
+    route:
+      # Upstream says not to expose this endpoint, and it is right about why: the
+      # server is tiny_http with four worker threads and no socket read timeout,
+      # so a client that declares a body and then stalls holds a thread until the
+      # connection closes, and a large enough Content-Length aborts the process.
+      # The API token does nothing about either — it decides who may read an
+      # account, which is considered long after the thread is already spent.
+      #
+      # So this is envoy-internal only, never envoy-towonel: the exposure is the
+      # LAN, which is the same trust boundary port-forward would have given,
+      # minus the port-forward. What it buys is the dashboard against the
+      # deployed instance —
+      #   GHOSTRECON_URL=https://ghostrecon.${SECRET_INTERNAL_DOMAIN} \
+      #   GHOSTRECON_API_TOKEN=$(kubectl -n ghostfolio get secret ghostrecon \
+      #     -o jsonpath='{.data.GHOSTRECON_API_TOKEN}' | base64 -d) ghostrecon
+      #
+      # Deliberately no forward-auth component: the only clients are the TUI and
+      # curl, which authenticate with `Authorization: Bearer`. An authentik
+      # redirect to a browser login is not something either can follow.
+      api:
+        annotations:
+          # /healthz, not /: the server has no root route, so the sidecar's
+          # default probe would 404 forever. /healthz is unauthenticated by
+          # design and consults neither SimpleFIN nor Ghostfolio, so this
+          # watches the process and nothing else — a failed reconcile is the
+          # PrometheusRule's job, not this one.
+          gatus.home-operations.com/endpoint: |-
+            url: https://ghostrecon.${SECRET_INTERNAL_DOMAIN}/healthz
+            conditions: ["[STATUS] == 200"]
+        hostnames:
+          - "ghostrecon.${SECRET_INTERNAL_DOMAIN}"
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+        rules:
+          # Matched paths only, rather than the usual bare "/". /metrics stays
+          # off the gateway — Prometheus scrapes the ClusterIP directly via the
+          # serviceMonitor below — and so does /readyz, which is for the kubelet.
+          # Anything else on this hostname is a 404 from envoy that never reaches
+          # a worker thread.
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /api/v1
+              - path:
+                  type: Exact
+                  value: /healthz
+            backendRefs:
+              - identifier: metrics
+                port: 9464
+    serviceMonitor:
+      metrics:
+        serviceName: *app
+        endpoints:
+          - port: metrics
+            path: /metrics
+            # A gauge that only moves when a scheduled run finishes does not reward
+            # scraping faster than this.
+            interval: 1m
+            scrapeTimeout: 10s
+    persistence:
+      # config.yaml, as a file rather than as environment. A Secret and not a
+      # ConfigMap because it carries real Ghostfolio account UUIDs.
+      #
+      # derive.rhai is a second key of the *same* Secret. That is not a
+      # convenience: the script path resolves against config.yaml's own directory
+      # rather than the working directory, so mounting the whole Secret at /config
+      # puts it exactly where the resolver looks. A separate mount would not.
+      config:
+        type: secret
+        name: ghostrecon-config
+        # 0440, not 0400. A Secret volume is mounted owned by root and by the pod's
+        # fsGroup, not by runAsUser — so owner-only permissions lock the process out
+        # of its own config, and the pod fails at startup unable to find it.
+        defaultMode: 0440
+        globalMounts:
+          - path: /config
+            readOnly: true
+      # This has to outlive the pod, so it is the volsync-managed claim rather
+      # than one the chart creates.
+      #
+      # Ghostfolio's import has no idempotency key, so every accepted activity is
+      # fingerprinted into applied.json beside the plan, and a second apply skips
+      # what already landed. Losing this volume turns a crash mid-apply into a
+      # double import.
+      data:
+        existingClaim: *app
+        globalMounts:
+          - path: /data
