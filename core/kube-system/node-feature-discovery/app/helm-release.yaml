@@ -1,0 +1,88 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: node-feature-discovery
+spec:
+  interval: 5m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 0.18.2
+  url: oci://registry.k8s.io/nfd/charts/node-feature-discovery
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/fluxcd-community/flux2-schemas/main/helmrelease-helm-v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: node-feature-discovery
+  namespace: kube-system
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: node-feature-discovery
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  values:
+    nodeFeatureRule:
+      createCRD: true
+    worker:
+      tolerations:
+        - key: "arm"
+          value: "true"
+          operator: "Equal"
+          effect: "NoSchedule"
+      config:
+        core:
+          sources:
+            - custom
+            - pci
+            - usb
+        sources:
+          usb:
+            deviceClassWhitelist:
+              - "10"
+              - "02"
+              - "0e"
+              - "ef"
+              - "fe"
+              - "ff"
+            deviceLabelFields:
+              - "class"
+              - "vendor"
+              - "device"
+          custom:
+            - name: "conbee" # Zigbee usb controller
+              matchOn:
+                - usbId:
+                    vendor: [ "1cf1" ]
+                    device: [ "0030" ]
+            - name: "apc-ups" # Uninterruptible power supply
+              matchOn:
+                - usbId:
+                    vendor: [ "051d" ]
+                    device: [ "0002" ]
+            - name: "coral-tpu"
+              matchOn:
+                - usbId:
+                    vendor: [ "1a6e", "18d1" ]
+                - pciId:
+                    class: [ "0880" ]
+                    vendor: [ "1ac1" ]
+            - name: "intel-gpu"
+              matchOn:
+                - pciId:
+                    class: [ "0300" ]
+                    vendor: [ "8086" ]
+            - name: "microphone"
+              matchOn:
+                - usbId:
+                    vendor: [ "08bb" ]
+                    device: [ "2902" ]
+      annotations:
+        configmap.reloader.stakater.com/reload: "nfd-worker-conf"

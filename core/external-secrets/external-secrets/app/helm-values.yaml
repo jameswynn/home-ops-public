@@ -1,0 +1,48 @@
+installCRDs: true
+# Shared by the controller, webhook and certController below. CPU from 7d of
+# Prometheus data: controller p50 4.6m / p95 8.4m / max 11.3m, webhook p50
+# 1.2m / p95 1.5m / max 2.1m, certController p50 1.8m / p95 2.1m / max 2.3m.
+# 25m is the practical request floor and clears the largest of the three ~3x.
+# No CPU limit, per the cluster convention. bitwarden-sdk-server no longer
+# shares this block — it uses roughly 2.5x the controller, see below.
+resources: &resources
+  requests:
+    cpu: 25m
+    memory: 50Mi
+    ephemeral-storage: 100Mi
+  limits:
+    memory: 300Mi
+    ephemeral-storage: 100Mi
+serviceMonitor:
+  enabled: true
+  interval: 1m
+webhook:
+  resources: *resources
+  serviceMonitor:
+    enabled: true
+    interval: 1m
+certController:
+  resources: *resources
+  serviceMonitor:
+    enabled: true
+    interval: 1m
+bitwarden-sdk-server:
+  enabled: true
+  # Its own block rather than *resources: this is the only component that does
+  # real work per sync (it talks to Bitwarden Secrets Manager for every
+  # ExternalSecret refresh). CPU from 7d of Prometheus data: p50 10.4m, p95
+  # 20.6m, max 24.3m — roughly 2.5x the controller. No CPU limit, per the
+  # cluster convention.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 50Mi
+      ephemeral-storage: 100Mi
+    limits:
+      memory: 300Mi
+      ephemeral-storage: 100Mi
+  serviceMonitor:
+    enabled: true
+    interval: 1m
+  podAnnotations:
+    secret.reloader.stakater.com/reload: "bitwarden-css-certs,bitwarden-secrets-manager,bitwarden-tls-certs"

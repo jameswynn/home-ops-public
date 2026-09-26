@@ -1,0 +1,108 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app music-importer
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 3
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    controllers:
+      main:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        # RWO volume + a SQLite beets library + a deliberately serial worker.
+        # Two replicas would corrupt library.db; Recreate avoids an overlap on
+        # rollout. This must never be scaled up.
+        replicas: 1
+        strategy: Recreate
+        containers:
+          main:
+            image:
+              repository: forge.wynning.tech/james/music-importer # {"$imagepolicy": "yubal:music-importer:name"}
+              tag: v0.4.0 # {"$imagepolicy": "yubal:music-importer:tag"}
+            env:
+              TZ: ${CLUSTER_TZ}
+              MI_YUBAL_URL: http://yubal.yubal.svc.cluster.local:8080
+              MI_INCOMING_DIR: /mnt/media/music-incoming
+              MI_LIBRARY_DIR: /mnt/media/music
+              MI_QUARANTINE_DIR: /mnt/media/music-quarantine
+              MI_STATE_DIR: /state
+              MI_NAVIDROME_URL: https://navidrome.${SECRET_ROOT_DOMAIN}
+              MI_NTFY_URL: https://ntfy.${SECRET_ROOT_DOMAIN}
+              # MI_NTFY_TOPIC deliberately absent: it comes from the secret
+              # below. A value here would win — env takes precedence over
+              # envFrom — and silently shadow it.
+            envFrom:
+              - secretRef:
+                  name: *app
+            # CPU is bursty and entirely MusicBrainz-bound: idle between jobs,
+            # then a few minutes of tag reading and HTTP at 1 req/s. 25m is the
+            # cluster request floor. No CPU limit, per convention — an import
+            # should finish rather than be throttled. Revisit from Prometheus
+            # after a week of real traffic.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 256M
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 768Mi
+                ephemeral-storage: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: {drop: ["ALL"]}
+    defaultPodOptions:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      imagePullSecrets:
+        - name: forge-wynning-tech-creds
+    # No service and no route: this is a headless worker with no UI or API.
+    persistence:
+      # beets library.db and the importer ledger. Must NOT live on NFS —
+      # SQLite WAL over NFS is unreliable.
+      state:
+        enabled: true
+        existingClaim: *app
+        advancedMounts:
+          main:
+            main:
+              - path: /state
+      # ONE mount of the whole export, deliberately. link(2) returns EXDEV
+      # across mount points even when the underlying filesystem is the same, so
+      # mounting music/ and music-incoming/ as two subPath volumes would break
+      # the hardlink that keeps yubal's dedup working for playlist tracks.
+      media:
+        enabled: true
+        type: nfs
+        server: ${SECRET_NAS_URL}
+        path: /volume1/media
+        globalMounts:
+          - path: /mnt/media
+      tmpfs:
+        type: emptyDir
+        sizeLimit: 256Mi
+        globalMounts:
+          - path: /tmp
+            subPath: tmp
+          - path: /cache
+            subPath: cache
+          - path: /run
+            subPath: run

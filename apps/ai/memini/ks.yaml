@@ -1,0 +1,58 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app memini-database
+  namespace: &namespace ai
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  # A first bootstrap has to pull the vectorchord operand image and run initdb,
+  # so this is deliberately longer than the 3m the app-side Kustomizations use.
+  timeout: 15m
+  dependsOn:
+    - name: cloudnative-pg
+      namespace: default
+  path: ./apps/ai/memini/database
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # memini reads its DSN from the CNPG-generated `memini-postgres-app` Secret,
+  # which only exists once the Cluster has bootstrapped. Wait here so the app
+  # Kustomization below does not roll a pod that cannot mount it.
+  wait: true
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app memini
+  namespace: &namespace ai
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  postBuild:
+    substitute:
+      APP: *app
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  dependsOn:
+    - name: memini-database
+      namespace: *namespace
+  path: ./apps/ai/memini/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

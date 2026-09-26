@@ -1,0 +1,152 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app unifi
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 2
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    controllers:
+      unifi:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        containers:
+          app:
+            image:
+              repository: ghcr.io/jacobalberty/unifi-docker
+              tag: v10.0.162@sha256:896c0ab82d33300694dae82982fd7094497afcbea0be92cadc1e94bfead731d3
+              pullPolicy: IfNotPresent
+            env:
+              TZ: ${CLUSTER_TZ}
+              RUNAS_UID0: "false"
+              UNIFI_UID: "999"
+              UNIFI_GID: "999"
+              UNIFI_STDOUT: "true"
+              JVM_INIT_HEAP_SIZE:
+              JVM_MAX_HEAP_SIZE: 1024M
+            # CPU from 7d of Prometheus data: p50 9m, p95 10m, max 15m — the
+            # steadiest consumer in this batch (the JVM never really idles).
+            # 25m gives ~2.5x headroom over p95. No CPU limit, per the cluster
+            # convention — controller startup and firmware pushes should burst.
+            resources:
+              requests:
+                memory: 750Mi
+                cpu: 25m
+                ephemeral-storage: 200Mi
+              limits:
+                memory: 1500Mi
+                ephemeral-storage: 200Mi
+    service:
+      app:
+        controller: *app
+        type: LoadBalancer
+        externalTrafficPolicy: Local
+        loadBalancerIP: ${SVC_UNIFI_CONTROLLER_ADDR}
+        annotations:
+          metallb.universe.tf/allow-shared-ip: unifi
+        ports:
+          http:
+            port: &httpsPort 8443
+            protocol: HTTPS
+          controller:
+            enabled: true
+            port: 8080
+            protocol: TCP
+          portal-http:
+            enabled: false
+            port: 8880
+            protocol: HTTP
+          portal-https:
+            enabled: false
+            port:  8843
+            protocol: HTTPS
+          speedtest:
+            enabled: true
+            port: 6789
+            protocol: TCP
+          stun:
+            enabled: true
+            port: 3478
+            protocol: UDP
+          syslog:
+            enabled: true
+            port: 5514
+            protocol: UDP
+          discovery:
+            enabled: true
+            port: 10001
+            protocol: UDP
+
+    route:
+      app:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "Unifi Controller"
+          gethomepage.dev/description: "WiFi Management"
+          gethomepage.dev/group: "Operations"
+          gethomepage.dev/icon: "unifi-controller.png"
+          gethomepage.dev/weight: "90"
+          internal.wynning.tech/hostname: &host "{{ .Release.Name }}.${SECRET_INTERNAL_DOMAIN}"
+        hostnames:
+          - *host
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: *app
+                port: *httpsPort
+
+    persistence:
+      config:
+        enabled: true
+        existingClaim: unifi-data
+        globalMounts:
+          - path: /unifi
+      # Mount the TLS cert for unifi to use
+      cert:
+        type: secret
+        name: unifi-tls
+        advancedMounts:
+          unifi:
+            app:
+              - path: /unifi/cert/cert.pem
+                subPath: tls.crt
+                readOnly: true
+              - path: /unifi/cert/privkey.pem
+                subPath: tls.key
+                readOnly: true
+
+    rawResources:
+      backend-tls-policy:
+        apiVersion: gateway.networking.k8s.io/v1alpha3
+        kind: BackendTLSPolicy
+        spec:
+          spec:
+            targetRefs:
+              - group: ""
+                kind: Service
+                name: *app
+                sectionName: http
+            validation:
+              hostname: *host
+              wellKnownCACertificates: System

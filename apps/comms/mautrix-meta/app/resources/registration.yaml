@@ -1,0 +1,15 @@
+---
+id: meta
+url: http://mautrix-meta.comms.svc.cluster.local:29319
+as_token: {? {.MAUTRIX_META_AS_TOKEN: ''} : ''}
+hs_token: {? {.MAUTRIX_META_HS_TOKEN: ''} : ''}
+sender_localpart: {? {.MAUTRIX_META_SENDER_LOCALPART: ''} : ''}
+rate_limited: false
+namespaces:
+  users:
+    - regex: ^@facebookbot:${SECRET_ROOT_DOMAIN/./\\.}$
+      exclusive: true
+    - regex: ^@fb_.*:${SECRET_ROOT_DOMAIN/./\\.}$
+      exclusive: true
+de.sorunome.msc2409.push_ephemeral: true
+push_ephemeral: true

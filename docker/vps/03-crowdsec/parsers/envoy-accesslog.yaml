@@ -1,0 +1,33 @@
+---
+# s01-parse: map Envoy Gateway's JSON access log onto CrowdSec's HTTP event fields.
+#
+# The field names below are contractual with the access-log format declared on BOTH
+# EnvoyProxy resources in core/networking/envoy-gateway/proxy/ (envoy-proxy.yaml and
+# gateway-towonel.yaml). `path` and `client_ip` do not exist in Envoy Gateway's built-in
+# format — they were added specifically for this. If detection ever goes silent, check
+# that those two fields are still present in the log before debugging CrowdSec.
+#
+# `client_ip` is %DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%, i.e. already port-stripped, so
+# there is no fragile host:port splitting here (which would break on IPv6 anyway). On the
+# towonel gateway it is the real client IP, preserved end-to-end by PROXY protocol v2.
+onsuccess: next_stage
+name: wynning/envoy-accesslog
+description: "Parse Envoy Gateway JSON access logs tailed from Loki"
+filter: "evt.Line.Labels.type == 'envoy-accesslog'"
+statics:
+  - meta: log_type
+    value: http_access-log
+  - meta: service
+    value: http
+  - meta: source_ip
+    expression: "JsonExtract(evt.Line.Raw, 'client_ip')"
+  - meta: http_status
+    expression: "JsonExtract(evt.Line.Raw, 'response_code')"
+  - meta: http_path
+    expression: "JsonExtract(evt.Line.Raw, 'path')"
+  - meta: http_verb
+    expression: "JsonExtract(evt.Line.Raw, 'method')"
+  - meta: http_user_agent
+    expression: "JsonExtract(evt.Line.Raw, 'user-agent')"
+  - meta: target_fqdn
+    expression: "JsonExtract(evt.Line.Raw, ':authority')"

@@ -1,0 +1,74 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: yubal-namespace-policy
+  namespace: &namespace yubal
+spec:
+  endpointSelector: {}
+  ingress:
+    # Allow ingress from envoy-gateway in the networking namespace.
+    # TODO: tighten gateway.networking.k8s.io/gateway-name match if you want to scope
+    # this to only envoy-internal or only envoy-towonel rather than both.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Allow intra-namespace traffic (pod-to-pod within this namespace)
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": *namespace
+
+  # TODO: if Prometheus needs to scrape this namespace, uncomment:
+  # - fromEndpoints:
+  #     - matchLabels:
+  #         app.kubernetes.io/name: prometheus
+  #         "k8s:io.kubernetes.pod.namespace": monitoring
+
+  egress:
+    # Allow intra-namespace traffic
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": *namespace
+
+    # Allow the internal envoy gateway.
+    #
+    # Every self-hosted service music-importer depends on sits behind this one
+    # gateway, because split-horizon DNS resolves all three public hostnames to
+    # its LoadBalancer VIP:
+    #
+    #   navidrome.wynning.tech    trigger a rescan after an import
+    #   ntfy.wynning.tech         quarantine / added / degraded notifications
+    #   search.int.wynning.tech   SearXNG, the last-resort cover art source
+    #
+    # This MUST be toEndpoints, not toCIDR of the VIP. Cilium translates a
+    # service VIP to its backing pod BEFORE evaluating egress policy, so the
+    # destination identity is the envoy pod, never the VIP address. A
+    # `toCIDR: <VIP>/32` rule therefore never matches — verified with hubble,
+    # which showed the drop as:
+    #
+    #   music-importer -> networking/envoy-internal-...:10443 (ID:6390)
+    #   policy-verdict:none EGRESS DENIED
+    #
+    # This is the exact mirror of the ingress rule above.
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Allow DNS
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    - toEntities:
+        - world

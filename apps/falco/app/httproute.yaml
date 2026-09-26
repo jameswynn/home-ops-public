@@ -1,0 +1,17 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.networking.k8s.io/httproute_v1.json
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: falco
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: networking
+      sectionName: https
+  hostnames:
+    - "falco.${SECRET_INTERNAL_DOMAIN}"
+  rules:
+    - backendRefs:
+        - name: falco-falcosidekick-ui
+          port: 2802

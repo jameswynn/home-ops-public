@@ -1,0 +1,42 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+# Remote state for the OpenTofu modules under `tofu/`. Those run from a
+# workstation, not in-cluster, so there is no app directory to co-locate this
+# with -- it sits beside the cluster that backs it, the way sneaker-social.yaml
+# does for garage-cluster.
+#
+# State is small (hundreds of KB per module) but must not be lost: it is the
+# only record of which real resources tofu owns. Garage has no object
+# versioning, so the NAS snapshot of the backing volume is the only backup.
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: &bucket tofu-state
+spec:
+  clusterRef:
+    name: garage-nas
+  quotas:
+    maxSize: 1Gi
+  globalAlias: *bucket
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+# No importKey: the operator mints the key and writes it to a Secret named
+# after this GarageKey, using the operator's default key names (access-key-id,
+# secret-access-key, endpoint, region).
+#
+# `write` covers both PutObject and DeleteObject in Garage, which is what the
+# S3 backend needs for `use_lockfile` -- the .tflock object is created and
+# removed on every apply. `owner` is deliberately not granted: nothing that
+# uses this key needs to reconfigure the bucket itself.
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: tofu-state
+spec:
+  clusterRef:
+    name: garage-nas
+  bucketPermissions:
+    - bucketRef:
+        name: tofu-state
+      read: true
+      write: true

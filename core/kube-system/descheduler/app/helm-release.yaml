@@ -1,0 +1,102 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: descheduler
+spec:
+  interval: 1h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 0.36.0
+  url: oci://ocharted.wynning.tech/kubernetes-sigs.github.io/descheduler/descheduler
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: descheduler
+  namespace: kube-system
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: descheduler
+  install:
+    createNamespace: true
+  values:
+    kind: Deployment
+    # nidavellir is the only coral-tpu node, so it is the only node frigate can
+    # run on, and frigate's 1000m request leaves it the tightest node in the
+    # cluster. descheduler is stateless (policy comes from a ConfigMap, no PVC,
+    # no device deps), so moving it off is the cheapest headroom win available.
+    # It held a 500m chart-default request when this was added; that is now
+    # trimmed to 25m below, so the affinity buys less than it used to — but
+    # there is still no reason to put it back on the tightest node.
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: feature.node.kubernetes.io/coral-tpu
+                  operator: DoesNotExist
+                - key: kubernetes.io/arch
+                  operator: In
+                  values:
+                    - amd64
+    # CPU from 7d of Prometheus data: p50 0.6m, p95 1.1m, max 4.5m. It wakes on
+    # the descheduling interval, walks the pod list, and sleeps again. The chart
+    # ships a 500m request (and a matching 500m limit) by default, which was pure
+    # phantom commitment — 475m of the cluster's schedulable CPU held for a pod
+    # that never uses more than 5m. The chart's limit is nulled out rather than
+    # dropped, since Helm deep-merges chart defaults back in for keys that are
+    # simply omitted. Memory is left at the chart default.
+    resources:
+      requests:
+        cpu: 25m
+      limits:
+        cpu: null
+    # Must be expressed as v1alpha2 `profiles`, NOT the v1alpha1 `strategies` map.
+    # descheduler >=0.32 ignores `strategies` entirely — it is copied into the policy
+    # ConfigMap as an unread top-level key while the chart's *default* profile silently
+    # takes effect, which is how LowNodeUtilization ran for months despite being set to
+    # `enabled: false` here. It evicted a loki-gateway replica every ~5m, and each
+    # eviction killed the CrowdSec engine on the VPS (its Loki datasource treats a
+    # dropped connection as fatal) — 682 restarts. Verify changes actually land with:
+    #   kubectl get cm -n kube-system descheduler -o jsonpath='{.data.policy\.yaml}'
+    deschedulerPolicy:
+      profiles:
+        - name: default
+          pluginConfig:
+            # Chart default, kept verbatim: allow evicting pods backed by local
+            # storage (emptyDir), protect pods with a PVC.
+            - name: DefaultEvictor
+              args:
+                podProtections:
+                  defaultDisabled:
+                    - PodsWithLocalStorage
+                  extraEnabled:
+                    - PodsWithPVC
+            - name: RemoveDuplicates
+            - name: RemovePodsViolatingNodeAffinity
+              args:
+                nodeAffinityType:
+                  - requiredDuringSchedulingIgnoredDuringExecution
+            - name: RemovePodsViolatingNodeTaints
+            - name: RemovePodsViolatingInterPodAntiAffinity
+          # Only the four plugins this repo has always meant to run. LowNodeUtilization
+          # stays off: it rebalances on node utilization alone, ignoring whether a
+          # workload tolerates being moved. RemovePodsHavingTooManyRestarts and
+          # RemovePodsViolatingTopologySpreadConstraint are chart defaults that were
+          # never intended here — re-add them deliberately if you want them.
+          plugins:
+            balance:
+              enabled:
+                - RemoveDuplicates
+            deschedule:
+              enabled:
+                - RemovePodsViolatingNodeTaints
+                - RemovePodsViolatingNodeAffinity
+                - RemovePodsViolatingInterPodAntiAffinity

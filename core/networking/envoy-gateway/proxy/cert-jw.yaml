@@ -1,0 +1,19 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cert-manager.io/certificate_v1.json
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: jameswynn-cert
+spec:
+  commonName: jameswynn.com
+  dnsNames:
+    - jameswynn.com
+    - '*.jameswynn.com'
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: letsencrypt
+  secretName: jameswynn-cert
+  usages:
+    - digital signature
+    - key encipherment

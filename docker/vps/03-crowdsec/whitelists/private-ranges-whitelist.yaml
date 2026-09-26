@@ -1,0 +1,25 @@
+---
+# Never ban a private or carrier-grade-NAT address.
+#
+# This is not theoretical here. Everything originating on the VPS itself reaches envoy
+# through the Caddy edge, so it arrives with the *bridge gateway* as its client IP —
+# `172.18.0.1` for both the Forgejo runner daemon and its job containers, which are
+# indistinguishable from each other in the access log. If any of that traffic ever
+# tripped a scenario (a burst of 429s, say), the nftables bouncer would drop 172.18.0.1
+# and take the runner offline with it.
+#
+# 100.64.0.0/10 is included because tailnet addresses live there, and the CrowdSec
+# engine reaches the cluster's Loki over the tailnet.
+#
+# `crowdsecurity/linux` only brings in `whitelist-good-actors` (search-engine crawlers);
+# it does not whitelist private ranges, so this has to be declared explicitly.
+name: custom/private-ranges-whitelist
+description: "Never ban RFC1918 / loopback / CGNAT — VPS-local traffic SNATs to a bridge address"
+whitelist:
+  reason: "private, loopback or tailnet address — never a real attacker"
+  cidr:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "127.0.0.0/8"
+    - "100.64.0.0/10"

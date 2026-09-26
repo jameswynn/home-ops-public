@@ -1,0 +1,18 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.networking.k8s.io/referencegrant_v1beta1.json
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: garage-web
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: garage-web
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: crd-schema-publisher
+  to:
+    - group: ""
+      kind: Service
+      name: garage-cluster

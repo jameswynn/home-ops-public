@@ -1,0 +1,62 @@
+---
+# Container logs from this host → the cluster's Loki, over the tailnet.
+#
+# Reads docker's json-file logs directly off /var/lib/docker/containers. The alternative
+# — pointing every stack at the fluentd log driver — was rejected because it breaks
+# `docker logs` and makes every container's startup depend on this one.
+service:
+  flush: 5
+  log_level: info
+  # Scraped by prometheus-agent at /api/v1/metrics/prometheus. Also the only liveness
+  # signal for this container: the image is distroless, so there is no shell to run a
+  # compose healthcheck with.
+  http_server: "on"
+  http_listen: 0.0.0.0
+  http_port: 2020
+  storage.metrics: "on"
+
+pipeline:
+  inputs:
+    - name: tail
+      alias: docker_logs
+      tag: vps.docker
+      path: /var/lib/docker/containers/*/*-json.log
+      # enrich.lua maps this back to a container name; it is dropped before shipping.
+      path_key: log_path
+      # Handles both the JSON envelope and docker's habit of splitting a long line into
+      # several `"partial":true` records — without this a stack trace arrives as a dozen
+      # separate Loki entries.
+      multiline.parser: docker, cri
+      db: /var/lib/fluent-bit/tail.db
+      db.sync: normal
+      refresh_interval: 10
+      rotate_wait: 5
+      skip_long_lines: true
+      mem_buf_limit: 32MB
+
+  filters:
+    - name: lua
+      match: vps.docker
+      script: /fluent-bit/etc/enrich.lua
+      call: enrich
+
+  outputs:
+    - name: loki
+      match: vps.docker
+      # Pinned to the tailnet address of the loki-gateway proxy by the compose file's
+      # extra_hosts — MagicDNS does not resolve from a docker bridge.
+      host: loki
+      port: 80
+      uri: /loki/api/v1/push
+      # Loki runs single-tenant with auth_enabled=false but still wants the org header.
+      tenant_id: fake
+      # Keep the label set small and bounded — three labels, one stream per container.
+      # Anything higher-cardinality (request ids, log levels parsed out of the line)
+      # belongs in the line, not here.
+      labels: job=vps/docker, host=heimdall, container=$container_name
+      line_format: json
+      # container_name is already a label, and `time` is already the Loki entry
+      # timestamp (the docker parser promotes it) — both would just be duplicated bytes
+      # on every line. What is left in the line is `log`, `stream` and `container_id`.
+      remove_keys: container_name, time
+      retry_limit: 5

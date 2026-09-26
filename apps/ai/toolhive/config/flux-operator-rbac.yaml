@@ -1,0 +1,42 @@
+---
+# ServiceAccount that the flux-operator-mcp container uses for in-cluster k8s auth.
+# Adapted from Tanguille's kubeconfig-file approach: this cluster is k3s (not Talos),
+# so we use a standard ServiceAccount token rather than a mounted kubeconfig secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: toolhive-flux-reader
+  namespace: ai
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: toolhive-flux-reader
+rules:
+  - apiGroups:
+      - source.toolkit.fluxcd.io
+      - kustomize.toolkit.fluxcd.io
+      - helm.toolkit.fluxcd.io
+      - notification.toolkit.fluxcd.io
+      - image.toolkit.fluxcd.io
+    resources: ["*"]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [namespaces, pods, events, configmaps]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets, replicasets]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: toolhive-flux-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: toolhive-flux-reader
+subjects:
+  - kind: ServiceAccount
+    name: toolhive-flux-reader
+    namespace: ai

@@ -1,0 +1,70 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app ollama-ui
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 3
+  install:
+    remediation:
+      retries: 5
+  upgrade:
+    remediation:
+      retries: 5
+  values:
+    controllers:
+      ollama-ui:
+        replicas: 1
+        containers:
+          app:
+            image:
+              repository: ghcr.io/open-webui/open-webui
+              tag: main
+            env:
+              OLLAMA_API_BASE_URL: http://ollama:11434
+            # CPU from 7d of Prometheus data: p50 2m, p95 3m, max 101m. 25m is
+            # the practical request floor. No CPU limit, per the cluster
+            # convention — the occasional inference-proxy burst should not be
+            # throttled.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 100Mi
+              limits:
+                memory: 2Gi
+                ephemeral-storage: 1Gi
+
+    persistence:
+      data:
+        enabled: true
+        existingClaim: *app
+        globalMounts:
+          - path: /app/backend/data
+
+    service:
+      app:
+        controller: ollama-ui
+        ports:
+          http:
+            port: 8080
+
+    route:
+      app:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "Ollama"
+          gethomepage.dev/description: "AI Agents"
+          gethomepage.dev/group: "AI"
+          gethomepage.dev/icon: "https://ollama.${SECRET_INTERNAL_DOMAIN}/static/favicon.svg"
+          gethomepage.dev/weight: "90"
+          internal.wynning.tech/hostname: &host "ollama.${SECRET_INTERNAL_DOMAIN}"
+        hostnames:
+          - *host
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking

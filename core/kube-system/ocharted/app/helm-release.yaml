@@ -1,0 +1,62 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: ocharted
+  namespace: kube-system
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: ocharted
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    replicaCount: 2
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+    config:
+      # Keep this proxy an explicit SSRF boundary: only known chart hosts are reachable.
+      upstreamAllowlist:
+        - argoproj.github.io
+        - charts.longhorn.io
+        - falcosecurity.github.io
+        - kedacore.github.io
+        - kubernetes-sigs.github.io
+        - grafana.github.io
+        - intel.github.io
+        - pkgs.tailscale.com
+        - perfectra1n.github.io
+        - jmcgrath207.github.io
+        - jameswynn.github.io
+        - itzg.github.io
+        - helm.coder.com
+        - nextcloud.github.io
+      cacheMaxBytes: 268435456
+    httpRoute:
+      enabled: true
+      annotations:
+        gatus.home-operations.com/endpoint: |-
+          path: /healthz
+          conditions: ["[STATUS] == 200"]
+      hostnames:
+        - ocharted.${SECRET_ROOT_DOMAIN}
+      parentRefs:
+        - name: envoy-internal
+          namespace: networking
+    monitoring:
+      serviceMonitor:
+        enabled: true
+    resources:
+      requests:
+        cpu: 10m
+        memory: 128Mi
+      limits:
+        memory: 768Mi
