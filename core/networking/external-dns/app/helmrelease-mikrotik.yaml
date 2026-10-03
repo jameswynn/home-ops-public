@@ -1,0 +1,104 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app mikrotik-dns
+  namespace: networking
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: external-dns
+  maxHistory: 2
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    fullnameOverride: *app
+    interval: 2m
+    logLevel: info
+    provider:
+      name: webhook
+      webhook:
+        image:
+          repository: ghcr.io/mirceanton/external-dns-provider-mikrotik
+          tag: v1.6.3@sha256:5794c1572153346e030a7de898e58c1fb81e6bd2f3eea563aabfa6d64ed199e0
+        env:
+          - name: LOG_FORMAT
+            value: json
+          - name: LOG_LEVEL
+            value: debug
+          - name: MIKROTIK_DEFAULT_TTL
+            value: "3600"
+          - name: MIKROTIK_BASEURL
+            valueFrom:
+              secretKeyRef:
+                name: &secret external-dns-secret
+                key: MIKROTIK_BASEURL
+          - name: MIKROTIK_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: *secret
+                key: MIKROTIK_USERNAME
+          - name: MIKROTIK_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: *secret
+                key: MIKROTIK_PASSWORD
+          - name: MIKROTIK_SKIP_TLS_VERIFY
+            valueFrom:
+              secretKeyRef:
+                name: *secret
+                key: MIKROTIK_SKIP_TLS_VERIFY
+          - name: MIKROTIK_DEFAULT_COMMENT
+            value: External-DNS
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http-webhook
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http-webhook
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        resources:
+          requests:
+            memory: 200Mi
+            cpu: 10m
+            ephemeral-storage: 100Mi
+          limits:
+            memory: 200Mi
+            cpu: 1000m
+            ephemeral-storage: 500Mi
+    extraArgs:
+      - --managed-record-types=A
+      - --managed-record-types=AAAA
+      - --managed-record-types=CNAME
+      - --managed-record-types=TXT
+      - --managed-record-types=SRV
+      - --gateway-name=envoy-internal
+    policy: sync
+    sources:
+      - "service"
+      - "gateway-httproute"
+      - "crd"
+    annotationPrefix: internal.wynning.tech/
+    registry: txt
+    txtPrefix: k8s.mikrotik-dns.
+    txtOwnerId: mikrotik-dns
+    domainFilters: ["${SECRET_INTERNAL_DOMAIN}", "${SECRET_ROOT_DOMAIN}", "jameswynn.com", "sneaker.social"]
+    serviceMonitor:
+      enabled: true
+    podAnnotations:
+      secret.reloader.stakater.com/reload: *secret

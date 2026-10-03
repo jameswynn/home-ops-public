@@ -1,0 +1,55 @@
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: ghostrecon
+spec:
+  image: forge.wynning.tech/james/ghostrecon
+  interval: 1m
+  secretRef:
+    name: forge-wynning-tech-creds
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: ghostrecon
+spec:
+  imageRepositoryRef:
+    name: ghostrecon
+  policy:
+    semver:
+      # Prereleases included: release.yml only publishes `:latest` for bare
+      # vX.Y.Z, and so far only v0.0.1-rc.1 exists.
+      range: ">=0.0.1-0"
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: ghostrecon
+spec:
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: Flux Bot
+        email: flux@example.com
+      messageTemplate: |
+        ghostrecon: automated image update
+
+        Automation: {{ .AutomationObject.Namespace }}/{{ .AutomationObject.Name }}
+        {{- range .Changed.Changes }}
+        - {{ .OldValue }} -> {{ .NewValue }}
+        {{- end }}
+
+    push:
+      branch: main
+  update:
+    strategy: Setters
+    path: ./apps/ghostfolio/ghostrecon/app

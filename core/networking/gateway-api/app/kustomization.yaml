@@ -1,0 +1,24 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/kustomization
+#
+# Gateway API CRDs, experimental channel, vendored from:
+#   https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/experimental-install.yaml
+#
+# kustomize-controller does not fetch remote bases, so the bundle has to live in
+# the repo. To refresh, replace the file wholesale and read the diff:
+#   curl -fsSL -o core/networking/gateway-api/app/experimental-install.yaml \
+#     https://github.com/kubernetes-sigs/gateway-api/releases/download/vX.Y.Z/experimental-install.yaml
+#
+# The only edit against the release asset is pre-commit stripping trailing
+# whitespace from two lines of the safe-upgrades CEL rule (insignificant inside a
+# double-quoted YAML scalar), so `curl <url> | diff -b - <file>` verifies it.
+# yamlfmt is told to skip the file (.yamlfmt.yaml) and yamllint to ignore it
+# (.linters/.yamllint.yaml) — upstream's sequence indentation is not this repo's.
+#
+# Renovate cannot see this pin: the version exists only inside the vendored
+# payload, and rewriting the bundle-version labels without the schemas would be
+# worse than no PR at all. Check upstream releases before calling it current.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - experimental-install.yaml

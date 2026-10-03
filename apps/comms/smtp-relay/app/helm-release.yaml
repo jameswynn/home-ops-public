@@ -1,0 +1,104 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app smtp-relay
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  interval: 1h
+  values:
+    controllers:
+      smtp-relay:
+        replicas: 2
+        strategy: RollingUpdate
+        annotations:
+          reloader.stakater.com/auto: "true"
+        containers:
+          app:
+            image:
+              repository: ghcr.io/foxcpp/maddy
+              tag: 0.9.5@sha256:de42151adff6388edb5e4ee88f60334fa1ab85e309485193ecb1c2db20203315
+            env:
+              SMTP_RELAY_METRICS_PORT: &metricsPort 8080
+              SMTP_RELAY_SMTP_PORT: &smtpPort 25
+              SMTP_RELAY_SERVER_PORT: 587
+            envFrom:
+              - secretRef:
+                  name: *app
+            probes:
+              liveness:
+                enabled: true
+              readiness:
+                enabled: true
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: { drop: ["ALL"] }
+            # Sized from 7d of Prometheus data: CPU p50 0.1m, p95 0.2m,
+            # max 0.4m; memory p95 9.3Mi, max 10.6Mi. This container carried no
+            # memory request at all and inherited one from the namespace
+            # LimitRange; with that gone the request is explicit. 25m is the
+            # bottom of the cluster CPU request ladder. No CPU limit, per the
+            # convention.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 32Mi
+              limits:
+                memory: 64Mi
+    defaultPodOptions:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+    service:
+      app:
+        type: LoadBalancer
+        forceRename: smtp
+        annotations:
+          internal.wynning.tech/hostname: smtp.${SECRET_INTERNAL_DOMAIN}
+          lbipam.cilium.io/ips: ${SVC_SMTP_RELAY_ADDR}
+        externalTrafficPolicy: Local
+        ports:
+          smtp:
+            port: *smtpPort
+    configMaps:
+      config:
+        data:
+          maddy.conf: |-
+            state_dir /cache/state
+            runtime_dir /cache/run
+
+            openmetrics tcp://0.0.0.0:{env:SMTP_RELAY_METRICS_PORT} { }
+
+            tls off
+            hostname {env:HOSTNAME}
+
+            smtp tcp://0.0.0.0:{env:SMTP_RELAY_SMTP_PORT} {
+                default_source {
+                    deliver_to &remote_queue
+                }
+            }
+
+            target.queue remote_queue {
+                target &remote_smtp
+            }
+
+            target.smtp remote_smtp {
+                starttls yes
+                auth plain {env:SMTP_RELAY_USERNAME} {env:SMTP_RELAY_PASSWORD}
+                targets tcp://{env:SMTP_RELAY_SERVER}:{env:SMTP_RELAY_SERVER_PORT}
+            }
+    persistence:
+      cache:
+        type: emptyDir
+        sizeLimit: 1Gi
+      config-file:
+        type: configMap
+        identifier: config
+        globalMounts:
+          - path: /data/maddy.conf
+            subPath: maddy.conf

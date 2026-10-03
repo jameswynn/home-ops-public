@@ -1,0 +1,44 @@
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: nextcloud
+  annotations:
+    # Pin the probe: the sidecar otherwise auto-picks the first non-root rule
+    # path, which here is the notify_push "/push/" endpoint — it has no handler
+    # at its root and always 404s. status.php is Nextcloud's health endpoint.
+    gatus.home-operations.com/endpoint: |-
+      url: https://cloud.${SECRET_ROOT_DOMAIN}/status.php
+      conditions: ["[STATUS] == 200"]
+    external-dns.alpha.kubernetes.io/hostname: "cloud.${SECRET_ROOT_DOMAIN}"
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: "NextCloud"
+    gethomepage.dev/description: "Private Files/Calendar/Tasks/etc"
+    gethomepage.dev/group: "Office"
+    gethomepage.dev/icon: "nextcloud.png"
+    gethomepage.dev/weight: "10"
+    gethomepage.dev/pod-selector: "app.kubernetes.io/instance in (nextcloud, collabora)"
+spec:
+  hostnames:
+    - "cloud.${SECRET_ROOT_DOMAIN}"
+  parentRefs:
+    - name: envoy-towonel
+      namespace: networking
+    - name: envoy-internal
+      namespace: networking
+  rules:
+    - backendRefs:
+        - name: nextcloud2
+          namespace: office
+          port: 8080
+          # - name: nextcloud-anubis
+          #   namespace: office
+          #   port: 8080
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /push/
+      backendRefs:
+        - name: nextcloud-push-service
+          namespace: office
+          port: 7867

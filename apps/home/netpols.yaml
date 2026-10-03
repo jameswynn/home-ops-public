@@ -1,0 +1,47 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: home-namespace-policy
+  namespace: home
+spec:
+  endpointSelector: {}
+  ingress:
+    # Allow ingress from envoy-gateway in the networking namespace
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            # This label must exist on the namespace object itself
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Allow intra-namespace traffic (pod-to-pod within home)
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": home
+
+  egress:
+    # Allow intra-namespace traffic
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": home
+
+    # Allow envoy gateways
+    - toCIDR:
+        - "192.168.1.223/32"
+
+    # Allow DNS
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow internet egress
+    - toEntities:
+        - world

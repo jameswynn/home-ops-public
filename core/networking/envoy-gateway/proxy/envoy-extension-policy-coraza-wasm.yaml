@@ -1,0 +1,251 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.envoyproxy.io/envoyextensionpolicy_v1alpha1.json
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: coraza-wasm
+spec:
+  targetSelectors:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      matchLabels:
+        network: towonel
+  wasm:
+    - name: wasm-filter
+      # fail-closed: the WAF is proven stable, so a filter that fails to load
+      # should reject rather than bypass inspection.
+      failOpen: false
+      rootID: waf
+      code:
+        type: Image
+        image:
+          # NOTE: coraza-proxy-wasm:0.6.0 is a multi-arch OCI *index*. Do not
+          # pin sha256 to the tag/index digest (d66f9448...) — Envoy Gateway
+          # resolves the amd64 platform manifest (65d6009b...) and the two never
+          # match. sha256 is optional for type: Image, so we let EG resolve and
+          # pin the digest itself.
+          url: ghcr.io/corazawaf/coraza-proxy-wasm:0.6.0
+      config:
+        default_directives: default
+        directives_map:
+          default:
+            # Blocking: rules with sufficient anomaly score return 403.
+            # Reviewed in DetectionOnly first; add CRS exclusions here if a real
+            # app trips a false positive.
+            - SecRuleEngine On
+            - SecRequestBodyAccess On
+            # 2 (warn), not 3 (info): at info Coraza's *debug* logger emits a
+            # "Finished tx_id=..." line per request plus a "Running ProcessResponseBody
+            # ... not enforced" line per response — 99.7% of this pod's wasm output
+            # (~348k lines/48h) for zero diagnostic value.
+            # What survives, and why this is the right knob:
+            #   - "Coraza: Access denied"/"Warning" (the lines carrying rule id +
+            #     severity) log at *critical*, unaffected by this setting;
+            #   - the `SecAuditLog /dev/stdout` JSON records come from the audit
+            #     engine, not the debug logger, so they are also unaffected.
+            # Do NOT instead raise Envoy's wasm component log level: the audit
+            # records are written at info severity and would be dropped with them.
+            - SecDebugLogLevel 2
+            - SecAuditEngine RelevantOnly
+            - SecAuditLogFormat JSON
+            - SecAuditLogType Serial
+            - SecAuditLog /dev/stdout
+            # H = audit trailer (the matched-rule `messages` array); without it
+            # the JSON audit log carries no rule id/severity/tags.
+            - SecAuditLogParts ABHZ
+            - Include @crs-setup-conf
+            # Allowed HTTP methods. CRS rule 911100 (phase 1) blocks any method not
+            # in tx.allowed_methods (default GET/HEAD/POST/OPTIONS). The base list is
+            # global — PUT/DELETE/PATCH are used by many REST apps. Must run after
+            # @crs-setup-conf and before @owasp_crs so 911100 sees the new value.
+            - "SecAction \"id:900201,phase:1,pass,nolog,t:none,setvar:'tx.allowed_methods=GET HEAD POST OPTIONS PUT DELETE PATCH'\""
+            # The WebDAV/CalDAV/CardDAV verbs are needed only by Nextcloud, so append
+            # them for cloud.wynning.tech alone (the %{tx.allowed_methods} macro
+            # extends the base list rather than replacing it).
+            - "SecRule REQUEST_HEADERS:Host \"@rx (?i)^cloud\\.wynning\\.tech(:[0-9]+)?$\" \"id:900202,phase:1,pass,nolog,t:none,setvar:'tx.allowed_methods=%{tx.allowed_methods} PROPFIND PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT SEARCH MKCALENDAR ACL'\""
+            # ActivityPub (GoToSocial + the hugo comments proxy) is a federation
+            # endpoint: inboxes receive signed activities from the whole fediverse
+            # and the client API carries the user's own posts — arbitrary content
+            # (post text, display names, HTML, URLs) that legitimately looks like
+            # SQL/shell/HTML, just like Matrix. So for the fediverse hosts:
+            #  - drop the injection families 932000-944999 (RCE/PHP/Node/XSS/SQLi/
+            #    session/Java) — pure FPs on federated content (Go server, not
+            #    content-injectable, returns JSON);
+            #  - drop 920420 (activity+json/ld+json not in the allowed content-type
+            #    set) and 920470 (the ld+json "profile" parameter).
+            # NB: do NOT setvar tx.allowed_request_content_type to "append" — the
+            # macro expands empty here and REPLACES the whole list, breaking every
+            # other content type on the host.
+            - "SecRule REQUEST_HEADERS:Host \"@rx (?i)^social(-proxy)?\\.wynning\\.tech(:[0-9]+)?$\" \"id:900340,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=920420,ctl:ruleRemoveById=920470,ctl:ruleRemoveById=920600,ctl:ruleRemoveById=932000-944999\""
+            # Coraza only auto-selects the JSON body processor for bare
+            # application/json, so activity+json/ld+json bodies are parsed as
+            # urlencoded args — which trips 920540 (unicode \uXXXX escapes, normal
+            # in JSON, flagged when REQBODY_PROCESSOR != JSON) and would keep
+            # tripping the 941/942 JSON-as-args class. Force JSON parsing for those
+            # content types (phase 1, before the body is processed) so the payload
+            # is inspected correctly instead of as form args.
+            - 'SecRule REQUEST_HEADERS:Content-Type "@rx (?i)^application/(activity\+json|ld\+json)" "id:900341,phase:1,pass,nolog,t:none,ctl:requestBodyProcessor=JSON"'
+            # Before-CRS exclusions: these phase-1 ctl:ruleRemoveById rules must
+            # be defined BEFORE @owasp_crs. Some CRS rules (e.g. 930130) are
+            # phase 1, and phase-1 rules execute in definition order — an exclusion
+            # placed after the include would run after the target already fired.
+            #
+            # Nextcloud WebDAV/CalDAV/CardDAV clients POST XML bodies that Coraza
+            # parses as urlencoded form args (ARGS_POST), so the XML markup
+            # (<?xml ...>, xmlns=) trips the XSS family (941xxx: 941100 libinjection,
+            # 941130 attribute vector, ...) and the anomaly score blocks the sync.
+            # These /remote.php/dav endpoints exchange machine XML, not rendered
+            # HTML, so drop the XSS category for those paths only. XSS protection
+            # stays on all other paths. Path-scoped (not host-scoped) on purpose:
+            # /remote.php/dav is Nextcloud-exclusive, so the path already contains
+            # the blast radius without needing a chained Host+URI rule.
+            # Same body-as-ARGS problem hits calendar/contact sync: .ics/.vcf PUT
+            # and REPORT bodies are CRLF-folded line data (SUMMARY:...\r\nDTSTART:...),
+            # so the CR/LF bytes trip the whole 921 header/response-splitting family:
+            # 921120 (HTTP response-splitting — CR/LF followed by HTTP-response-looking
+            # tokens), 921150 (HTTP header-injection via payload, CR/LF detected) and
+            # 921160 (CR/LF plus a header-name — the .ics "KEY:VALUE" folded lines look
+            # exactly like injected headers). Drop all three on these dav paths only;
+            # header/response-splitting protection stays on every other path.
+            - 'SecRule REQUEST_URI "@rx ^/(remote|public)\.php/(web)?dav" "id:900310,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=941000-941999,ctl:ruleRemoveById=920420,ctl:ruleRemoveById=921120,ctl:ruleRemoveById=921150,ctl:ruleRemoveById=921160"'
+            # Forgejo (forge.wynning.tech) is a code host + CI backend, and three of
+            # its surfaces feed arbitrary or binary content into the WAF as ARGS:
+            #  - the web UI serves repo files, diffs, issues and search results that
+            #    legitimately contain SQL/shell/HTML/code payloads;
+            #  - git smart-HTTP POSTs binary packfiles (git-upload-pack/receive-pack);
+            #  - the Actions runner talks Connect/gRPC on /api/actions with protobuf-
+            #    framed bodies (Declare/FetchTask/UpdateLog/...), streaming arbitrary
+            #    job-log output.
+            # Coraza has no protobuf/packfile body processor, so all of it is parsed
+            # as urlencoded ARGS and trips the injection families endlessly (933135
+            # PHP, 932160/932120 RCE, 942100 SQLi, 941xxx XSS ... all seen). Like the
+            # Matrix rule below, treat the whole host as trusted-app content and drop
+            # the injection super-family 932000-944999 (RCE/PHP/Node/XSS/SQLi/session/
+            # Java) host-wide — Forgejo is Go with parameterised storage and escapes
+            # its own output, so these are FPs here. Protocol/scanner/method rules
+            # (911/913/920/921 request-line) still apply. Also drop, host-scoped:
+            #  - 930130 (restricted-file access): repos legitimately expose dotfiles
+            #    (.env/.gitignore/.htaccess/.profile) in URLs; and 930120 (OS-file
+            #    access): binary framing matches lfi-os-files.data byte sequences.
+            #    (930 is outside the 932-944 range, so both are listed explicitly.)
+            #    Trade-off: root scans like /.env or an /etc/passwd LFI aren't caught
+            #    by 930 on this host (Forgejo 404s them).
+            #  - 920420 (content-type): git smart-HTTP sends x-git-*-pack-request and
+            #    the runner sends connect+proto, neither in the allowed set; 920440
+            #    (restricted extension): browsing/raw-serving arbitrary file types.
+            #  - 921120/921150/921160 (CR/LF header/response-splitting via payload):
+            #    binary framing + streamed job-log bytes read as folded CR/LF headers.
+            #  - 920450 (restricted header): git sets `Content-Encoding: gzip` when it
+            #    compresses an upload-pack request body, and content-encoding is in CRS's
+            #    restricted-header list. It scores 5 at critical severity, which alone hits
+            #    the phase-1 anomaly threshold, so 949111 denies with 403. This broke every
+            #    `git clone`/`fetch` over HTTPS through towonel — small negotiations went
+            #    through ungzipped while larger ones 403'd, which reads as an intermittent
+            #    CI failure. Only towonel carries the WAF, so envoy-internal was unaffected
+            #    and the split between the two runners is what exposed it.
+            - 'SecRule REQUEST_HEADERS:Host "@rx (?i)^forge\.wynning\.tech(:[0-9]+)?$" "id:900320,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=930130,ctl:ruleRemoveById=930120,ctl:ruleRemoveById=920420,ctl:ruleRemoveById=920440,ctl:ruleRemoveById=920450,ctl:ruleRemoveById=921120,ctl:ruleRemoveById=921150,ctl:ruleRemoveById=921160,ctl:ruleRemoveById=932000-944999"'
+            # git smart-HTTP is a BINARY protocol — pkt-line framing wrapping a zlib
+            # packfile — and CRS parses request bodies into ARGS, so every rule with an
+            # ARGS target evaluates that binary payload as if it were web input. 920270
+            # (@validateByteRange 1-255, targets REQUEST_URI_RAW|REQUEST_HEADERS|ARGS)
+            # trips on the null bytes and scores 10, which 949110 turns into a 403.
+            #
+            # Removing rules one at a time here is whack-a-mole: 920450 was excluded
+            # above for the same endpoints, and 920270 simply took its place. Turning
+            # body access off for the git transport paths fixes the class — no ARGS are
+            # populated, so no body-targeted rule can fire on packfile bytes. Header,
+            # URI and method enforcement all still apply, and the Forgejo web UI keeps
+            # full body inspection because this is scoped to the transport endpoints.
+            - 'SecRule REQUEST_URI "@rx ^/[^/]+/[^/]+/(info/refs|git-upload-pack|git-receive-pack)" "id:900321,phase:1,pass,nolog,t:none,ctl:requestBodyAccess=Off"'
+            # The Actions runner RPCs (/api/actions/runner.v1.RunnerService/*) are the
+            # same class one step further. `SecRequestBodyAccess On` makes the wasm
+            # filter buffer the whole request body, and Envoy Gateway's default
+            # per_connection_buffer_limit_bytes is 32Ki, so an UpdateLog call carrying a
+            # long job's log rows is rejected with 413 request_payload_too_large before
+            # the WAF scores anything at all. The runner retries ten times, gives up
+            # ("unable to send final job logs and status"), and the job's log is lost
+            # entirely — log_length stays 0 in action_task and the web UI 500s on
+            # .../logs. Only runners reaching Forgejo through towonel are affected; the
+            # in-cluster runner posts to the Service directly, which is why the same
+            # workflow logged fine on one runner and not the other. The bodies are
+            # protobuf-framed Connect/gRPC that Coraza has no processor for (see 900320
+            # above), so body inspection here was only ever producing the FPs 900320
+            # suppresses. Path-scoped like 900321; header, URI and method enforcement
+            # still apply, and the endpoint authenticates with the runner's UUID+token.
+            - 'SecRule REQUEST_URI "@rx ^/api/actions/" "id:900322,phase:1,pass,nolog,t:none,ctl:requestBodyAccess=Off"'
+            # Plausible analytics (proxied on blog.jameswynn.com) POSTs page events
+            # to /api/event with Content-Type text/plain (to avoid a CORS preflight),
+            # which isn't in the allowed content-type set → 920420. Drop it for the
+            # blog host (static site + analytics beacon).
+            - 'SecRule REQUEST_HEADERS:Host "@rx (?i)^blog\.jameswynn\.com(:[0-9]+)?$" "id:900360,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=920420"'
+            # Navidrome Subsonic API: auth params are high-entropy hex (s=salt UUID,
+            # t=MD5 token) that libinjection reads as SQLi (942100), and Subsonic
+            # clients send an RFC 2965 "$Path" cookie whose name matches shell var
+            # $path in unix-shell.data (932160 RCE). Scope by HOST, not the "/rest/"
+            # path — "/rest/" is a generic API prefix, so a path rule would disable
+            # SQLi+RCE detection for any other app that serves it. Other SQLi/RCE
+            # rules still apply on navidrome.
+            - 'SecRule REQUEST_HEADERS:Host "@rx (?i)^navidrome\.wynning\.tech(:[0-9]+)?$" "id:900330,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=942100,ctl:ruleRemoveById=932160"'
+            # Matrix (continuwuity, matrix.wynning.tech) federation + client APIs
+            # carry arbitrary user/remote content — message bodies, event JSON,
+            # display names — that legitimately contains SQL/shell/HTML-looking
+            # strings, tripping the injection families (942190 MSSQL seen; 941/932/
+            # 933/934/944 would follow). The homeserver is Rust with parameterised
+            # storage and returns JSON (not browser HTML), so these content rules
+            # are pure FPs here. Drop the injection families (RCE/PHP/Node/XSS/SQLi/
+            # session/Java) for the Matrix host; protocol/scanner/path (920/913/930)
+            # rules stay. Host-scoped so it can't apply to any other app. The apex
+            # (wynning.tech) is included because peers resolving the deprecated
+            # _matrix._tcp SRV record send Host: wynning.tech for federation traffic,
+            # which the continuwuity well-known route now forwards to the homeserver —
+            # without the apex here that traffic would just trade 404s for WAF 403s.
+            - 'SecRule REQUEST_HEADERS:Host "@rx (?i)^(matrix\.)?wynning\.tech(:[0-9]+)?$" "id:900350,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=932000-944999"'
+            # ntfy (ntfy.wynning.tech) receives Matrix Web Push. A remote homeserver's
+            # pusher (e.g. sygnal.sable.moe) POSTs RFC 8291 encrypted push payloads to
+            # /<topic>?up=1 from the public internet, so they arrive through towonel —
+            # the only gateway carrying the WAF. Two CRS rules fire on the Web Push wire
+            # format and together reach the phase-1 anomaly threshold of 5:
+            #  - 920450 (restricted header): RFC 8291 sets `Content-Encoding: aes128gcm`,
+            #    and content-encoding is in CRS's restricted-header list — critical, +5,
+            #    enough on its own for 949111 to deny;
+            #  - 920340 (body present but no Content-Type): the push body is an opaque
+            #    encrypted blob, sent without a Content-Type — +2.
+            # Result: every Matrix push to ntfy 403s (177 blocked sygnal POSTs in one 3h
+            # window) and the notification silently never arrives. Same shape and cause as
+            # the forgejo 920450 exclusion above (git's `Content-Encoding: gzip`).
+            # Host-scoped, so the WAF stays fully active on every other hostname; ntfy
+            # bodies are opaque publish payloads, not injectable content.
+            #
+            # Dropping those two header rules is necessary but NOT sufficient, and on its
+            # own it makes the failure worse. Clearing phase 1 only lets the request reach
+            # phase 2, where `SecRequestBodyAccess On` applies — and because a Web Push
+            # body carries no Content-Type, Coraza falls back to the URLENCODED body
+            # processor and parses the aes128gcm *ciphertext* into ARGS_POST /
+            # ARGS_POST_NAMES. Uniformly random bytes reliably contain NUL and CR/LF, so:
+            #  - 920270 (@validateByteRange 1-255, null character) — critical, +5;
+            #  - 921150 (CR/LF in payload = header injection) — critical, +5, usually
+            #    matching several times over one body;
+            #  - 942100/941100 (libinjection SQLi/XSS) on random byte runs — occasionally;
+            # scoring 15-50 against a threshold of 5, so 949110 denies in phase 2. Same
+            # class of failure as git's binary packfiles (rule 900321 above), and the same
+            # whack-a-mole: removing byte-range and CR/LF rules one at a time just promotes
+            # the next ARGS-targeted rule.
+            #
+            # A phase-2 denial is also what strips the body rather than rejecting the push
+            # cleanly: Coraza returns Continue on the request *headers*, so Envoy's router
+            # has already opened the upstream stream and sent `POST /<topic>?up=1` to ntfy
+            # (access logs show upstream_host = the ntfy pod, where phase-1 denials show
+            # none) before the wasm filter pauses to buffer the body and then swallows it.
+            # ntfy sees a publish with no body and records it as its empty-body placeholder,
+            # the literal message "triggered" — a notification that arrives but carries
+            # nothing the client can decrypt.
+            #
+            # So turn request body access off for this host, exactly as 900321 does for the
+            # git transport paths: no ARGS are populated, no body-targeted rule can fire on
+            # the ciphertext, and the body streams through to ntfy untouched. Every ntfy
+            # body is an opaque publish payload (encrypted blob or arbitrary user message
+            # text), so there is nothing here body inspection could meaningfully protect;
+            # header, URI and method enforcement all still apply, and ntfy itself is
+            # `auth-default-access: deny-all`.
+            - 'SecRule REQUEST_HEADERS:Host "@rx (?i)^ntfy\.wynning\.tech(:[0-9]+)?$" "id:900370,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=920450,ctl:ruleRemoveById=920340,ctl:requestBodyAccess=Off"'
+            - Include @owasp_crs/*.conf

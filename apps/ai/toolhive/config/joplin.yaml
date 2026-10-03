@@ -1,0 +1,108 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserver_v1beta1.json
+#
+# Read-only Joplin MCP backend.
+#
+# Joplin Server is a sync server: it has no notes, search, notebooks or tags
+# API, and Joplin's own MCP server ships in the desktop app only. So this
+# image (built in james/containers) bundles the Joplin terminal client with a
+# purpose-built MCP server: the client syncs a local copy of the notes into
+# /data, and the MCP server answers read tools from that copy's SQLite
+# database, opened read-only. The Joplin Web Clipper Data API is never
+# started, so nothing in this pod can write to Joplin.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: joplin
+spec:
+  image: forge.wynning.tech/james/joplin-mcp:3@sha256:2e60aa389cf28bbd8ab51fe2a29dcd575fa13ba20bc28044b83cbe415b7d2e59
+  transport: streamable-http
+  mcpPort: &port 8080
+  groupRef:
+    name: all
+  env:
+    # Must be the public hostname, not the in-cluster Service address: Joplin
+    # Server checks the Host header against its own APP_BASE_URL and answers
+    # "Invalid origin" to anything else. Internal DNS resolves this to the
+    # internal gateway, so the traffic stays inside the cluster.
+    - name: JOPLIN_SERVER_URL
+      value: https://joplin.${SECRET_ROOT_DOMAIN}
+  podTemplateSpec:
+    spec:
+      # No securityContext here: the operator applies its own to every
+      # MCPServer (runAsUser/runAsGroup/fsGroup 1000, runAsNonRoot,
+      # readOnlyRootFilesystem, drop ALL), which is what the other servers in
+      # this group run under. fsGroup 1000 is what makes the profile PVC
+      # writable, regardless of the uid the image itself declares.
+      volumes:
+        - name: profile
+          persistentVolumeClaim:
+            claimName: joplin-mcp-profile
+        # readOnlyRootFilesystem leaves the Joplin CLI with nowhere to put
+        # SQLite's temporary files, and it fails *silently* in a way that only
+        # shows up later: the fts4 virtual table never gets created, and the
+        # next migration dies on "no such table: notes_normalized", taking the
+        # container with it. Verified by running the published image read-only
+        # with and without this mount.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+      containers:
+        - name: mcp
+          # Two separate keys from one Secret, which spec.secrets cannot
+          # express: it is a list keyed by secret name, so only one entry per
+          # Secret is allowed there.
+          env:
+            - name: JOPLIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-secrets
+                  key: JOPLIN_USERNAME
+            - name: JOPLIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-secrets
+                  key: JOPLIN_PASSWORD
+          volumeMounts:
+            - name: profile
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          ports:
+            - name: mcp
+              containerPort: *port
+          # /health answers as soon as the HTTP server is up, deliberately
+          # without waiting on the first sync: an initial sync of a large
+          # account takes minutes, and gating readiness on it would turn that
+          # into a failed rollout. Tools called in that window return an empty
+          # result with an explanatory notice.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: mcp
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: mcp
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 256Mi
+              # The `ai` LimitRange defaults every container to a 64Mi
+              # ephemeral-storage limit, which the /tmp emptyDir above counts
+              # against. Declare the real need instead of being evicted mid-sync.
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 1Gi
+              ephemeral-storage: 512Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 100Mi

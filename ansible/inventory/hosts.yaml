@@ -1,0 +1,41 @@
+---
+kubernetes:
+  children:
+    master:
+      hosts:
+        muspelheim:
+          ansible_host: 192.168.1.12
+        svartalfheim:
+          ansible_host: 192.168.1.13
+        helheim:
+          ansible_host: 192.168.1.15
+      vars:
+        ansible_user: ubuntu
+    worker:
+      hosts:
+        nidavellir:
+          ansible_host: 192.168.1.14
+        niflheim:
+          ansible_host: 192.168.1.18
+        # jotunheim:
+        #   ansible_host: 192.168.1.16
+      vars:
+        ansible_user: ubuntu
+
+
+    arm64:
+      hosts:
+        niflheim:
+        # jotunheim:
+
+    # nas:
+    #   hosts: []
+    #   vars:
+    #     ansible_user: ubuntu
+
+    utility:
+      hosts:
+        # midgard:
+        #   ansible_host: 192.168.1.11
+      vars:
+        ansible_user: ubuntu

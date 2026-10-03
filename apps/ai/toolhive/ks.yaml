@@ -1,0 +1,80 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: toolhive-operator-crds
+  namespace: &namespace ai
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: toolhive-operator
+  targetNamespace: *namespace
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  path: ./apps/ai/toolhive/crds
+  # CRDs must never be pruned: removing them would cascade-delete all MCPServer/
+  # VirtualMCPServer instances cluster-wide. prune: false is intentional.
+  prune: false
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: toolhive-operator
+  namespace: &namespace ai
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: toolhive-operator
+  targetNamespace: *namespace
+  dependsOn:
+    - name: toolhive-operator-crds
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  path: ./apps/ai/toolhive/operator
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # wait: true so that the ExternalSecret has synced toolhive-secrets before the
+  # config Kustomization starts reconciling MCPServer/VirtualMCPServer resources
+  # that mount or reference that Secret.
+  wait: true
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app toolhive
+  namespace: &namespace ai
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  dependsOn:
+    - name: toolhive-operator
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  path: ./apps/ai/toolhive/config
+  components:
+    - ../../../../components/dragonfly
+  postBuild:
+    substitute:
+      APP: toolhive
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

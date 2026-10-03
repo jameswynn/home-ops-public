@@ -1,0 +1,59 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserver_v1beta1.json
+# Forgejo backend for the `coder` Hermes profile, authenticating as the dedicated
+# `hephaestus` service account (#1561) — never James's personal token. The paired
+# `home-ops` profile instance is forgejo-roberto.yaml; the two are identical apart
+# from which PAT they mount, so the VirtualMCPServer's `conflictResolution: prefix`
+# is what keeps their tools apart (forgejo-hephaestus_* vs forgejo-roberto_*).
+#
+# Use the container's streamable HTTP transport so the VMCP health monitor does not
+# repeatedly re-initialize a stdio server (#5890).
+#
+# --debug=false is load-bearing, not cosmetic: on a failed client handshake the
+# server logs Forgejo's raw API error, which echoes the supplied token back
+# ("access token does not exist [sha: <token>]"). Debug defaults to true. A valid
+# token never reaches that path, but a botched rotation would put the old PAT in
+# Loki, so keep the flag.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: forgejo-hephaestus
+spec:
+  image: git.b4mad.industries/agentic-forges/forgejo-mcp:v3.2.0@sha256:b10b55b47027af4c3fbb9337b20b54995cd2a6b1a010b458b0f034c3c5e04726
+  transport: streamable-http
+  mcpPort: 8080
+  groupRef:
+    name: all
+  args:
+    - --transport
+    - http
+    - --http-port
+    - "8080"
+    - --host
+    - 0.0.0.0
+    - --allowed-hosts
+    - localhost,127.0.0.1,mcp-forgejo-hephaestus,mcp-forgejo-hephaestus.ai.svc,mcp-forgejo-hephaestus.ai.svc.cluster.local,mcp-forgejo-hephaestus-proxy,mcp-forgejo-hephaestus-proxy.ai.svc,mcp-forgejo-hephaestus-proxy.ai.svc.cluster.local
+    - --allow-operator-token-fallback
+    - --debug=false
+    - --url
+    - https://forge.wynning.tech
+  secrets:
+    - name: toolhive-secrets
+      key: HEPHAESTUS_FORGEJO_PAT
+      targetEnvName: FORGEJO_ACCESS_TOKEN
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 100Mi

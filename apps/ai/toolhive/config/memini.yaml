@@ -1,0 +1,131 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserverentry_v1beta1.json
+# ToolHive's SSRF guard rejects hostnames matching a hardcoded blocklist
+# (*.cluster.local, kubernetes.default, localhost, etc.) — no allow-list escape
+# hatch exists. `.svc` isn't on that list, and the operator does no DNS resolution
+# to detect what it resolves to, so it passes; the in-cluster resolver's search
+# path resolves memini.ai.svc → memini.ai.svc.cluster.local via ndots. This is
+# exploiting an incomplete blocklist — a future ToolHive tightening it to `.svc`
+# would break this. Track https://github.com/stacklok/toolhive/issues/5890.
+#
+# Each persona gets its own MCPServerEntry so ToolHive forwards a separate
+# Memini API key per profile. Keys are scoped to per-persona namespaces in the
+# Memini UI. ToolHive does not pass the incoming OIDC token through to Memini —
+# each backend uses its own static Memini key (see OIDC.md for details).
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServerEntry
+metadata:
+  name: memini-zug
+spec:
+  remoteUrl: http://memini.ai.svc:8080/mcp
+  transport: streamable-http
+  groupRef:
+    name: all
+  headerForward:
+    addHeadersFromSecret:
+      - headerName: Authorization
+        valueSecretRef:
+          name: toolhive-secrets
+          key: MEMINI_ZUG_AUTHORIZATION
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserverentry_v1beta1.json
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServerEntry
+metadata:
+  name: memini-anton
+spec:
+  remoteUrl: http://memini.ai.svc:8080/mcp
+  transport: streamable-http
+  groupRef:
+    name: all
+  headerForward:
+    addHeadersFromSecret:
+      - headerName: Authorization
+        valueSecretRef:
+          name: toolhive-secrets
+          key: MEMINI_ANTON_AUTHORIZATION
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserverentry_v1beta1.json
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServerEntry
+metadata:
+  name: memini-jonathon
+spec:
+  remoteUrl: http://memini.ai.svc:8080/mcp
+  transport: streamable-http
+  groupRef:
+    name: all
+  headerForward:
+    addHeadersFromSecret:
+      - headerName: Authorization
+        valueSecretRef:
+          name: toolhive-secrets
+          key: MEMINI_JONATHON_AUTHORIZATION
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserverentry_v1beta1.json
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServerEntry
+metadata:
+  name: memini-carol
+spec:
+  remoteUrl: http://memini.ai.svc:8080/mcp
+  transport: streamable-http
+  groupRef:
+    name: all
+  headerForward:
+    addHeadersFromSecret:
+      - headerName: Authorization
+        valueSecretRef:
+          name: toolhive-secrets
+          key: MEMINI_CAROL_AUTHORIZATION
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserverentry_v1beta1.json
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServerEntry
+metadata:
+  name: memini-hephaestus
+spec:
+  remoteUrl: http://memini.ai.svc:8080/mcp
+  transport: streamable-http
+  groupRef:
+    name: all
+  headerForward:
+    addHeadersFromSecret:
+      - headerName: Authorization
+        valueSecretRef:
+          name: toolhive-secrets
+          key: MEMINI_HEPHAESTUS_AUTHORIZATION
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserverentry_v1beta1.json
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServerEntry
+metadata:
+  name: memini-roberto
+spec:
+  remoteUrl: http://memini.ai.svc:8080/mcp
+  transport: streamable-http
+  groupRef:
+    name: all
+  headerForward:
+    addHeadersFromSecret:
+      - headerName: Authorization
+        valueSecretRef:
+          name: toolhive-secrets
+          key: MEMINI_ROBERTO_AUTHORIZATION
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserverentry_v1beta1.json
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServerEntry
+metadata:
+  name: memini-sagan
+spec:
+  remoteUrl: http://memini.ai.svc:8080/mcp
+  transport: streamable-http
+  groupRef:
+    name: all
+  headerForward:
+    addHeadersFromSecret:
+      - headerName: Authorization
+        valueSecretRef:
+          name: toolhive-secrets
+          key: MEMINI_SAGAN_AUTHORIZATION

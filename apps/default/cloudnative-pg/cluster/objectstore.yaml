@@ -1,0 +1,34 @@
+---
+# yaml-language-server: $schema=https://github.com/datreeio/CRDs-catalog/raw/refs/heads/main/barmancloud.cnpg.io/objectstore_v1.json
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: postgres
+  namespace: default
+spec:
+  retentionPolicy: 30d
+  instanceSidecarConfiguration:
+    resources:
+      limits:
+        memory: 512Mi
+        cpu: 1
+      requests:
+        memory: 128Mi
+        cpu: 30m
+  configuration:
+    destinationPath: s3://postgresql/
+    endpointURL: https://${SECRET_GARAGE_URL}
+    s3Credentials:
+      region:
+        name: postgresql-garage
+        key: GARAGE_REGION
+      accessKeyId:
+        name: postgresql-garage
+        key: GARAGE_ACCESS_KEY
+      secretAccessKey:
+        name: postgresql-garage
+        key: GARAGE_SECRET_KEY
+    wal:
+      compression: zstd
+    data:
+      compression: gzip

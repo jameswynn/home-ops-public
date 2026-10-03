@@ -1,0 +1,19 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/externaldns.k8s.io/dnsendpoint_v1alpha1.json
+apiVersion: externaldns.k8s.io/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: towonel-agent
+spec:
+  endpoints:
+    # towonel.wynning.tech -> the VPS, grey (DNS-only) so the tunnel's raw TLS/SNI works.
+    # Published by the cloudflare-dns-towonel external-dns instance; the primary (forced)
+    # instance excludes this name. Migrated app hostnames CNAME to it (via their HTTPRoute
+    # on the envoy-towonel gateway), so this is the only per-record DNS entry needed.
+    - dnsName: "towonel.${SECRET_ROOT_DOMAIN}"
+      recordType: A
+      targets:
+        - "15.204.118.232"
+      providerSpecific:
+        - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+          value: "false"

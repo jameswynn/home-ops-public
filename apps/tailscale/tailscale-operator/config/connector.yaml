@@ -1,0 +1,25 @@
+---
+apiVersion: tailscale.com/v1alpha1
+kind: Connector
+metadata:
+  name: connector
+  namespace: tailscale
+spec:
+  # proxyConfig.defaultProxyClass does not apply to Connectors, so reference the
+  # class explicitly to pick up its CPU request. See proxyclass.yaml.
+  proxyClass: default
+  # Hostname prefix for connector machines - will be app-connector-0, app-connector-1, etc.
+  hostnamePrefix: "app-connector"
+  # Tag for ACL policy matching
+  tags:
+    - "tag:connector"
+  # Advertise the internal gateway subnet to Tailscale
+  appConnector:
+    routes:
+      # - 192.168.1.0/24 # Servers
+      # - 10.1.0.0/16 # More servers
+      # - 10.10.2.0/24 # Clients
+      # - 192.168.1.5/32 # DNS
+      # - 192.168.1.6/32 # DNS
+      - 192.168.1.223/32 # Internal Gateway
+  replicas: 2

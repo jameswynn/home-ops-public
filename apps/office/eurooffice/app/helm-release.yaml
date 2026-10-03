@@ -1,0 +1,214 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app eurooffice
+  namespace: office
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  install:
+    createNamespace: true
+    remediation:
+      retries: 5
+  upgrade:
+    remediation:
+      retries: 5
+  values:
+    controllers:
+      main:
+        # Single replica against ReadWriteOnce longhorn claims — RollingUpdate
+        # would deadlock waiting for the old pod to release them.
+        replicas: 1
+        strategy: Recreate
+
+        initContainers:
+          # The image creates EO_LOG itself but not the per-program
+          # subdirectories under it (the .deb does), and supervisord aborts at
+          # startup if a configured logfile directory is missing:
+          #
+          #   Error: The directory named as part of the path
+          #   /var/log/euro-office/documentserver/adminpanel/out.log does not
+          #   exist in section 'program:adminpanel'
+          #
+          # An empty volume mounted at EO_LOG hides those directories and
+          # reproduces exactly that crash-loop. DATA_DIR has the same problem
+          # for its baked contents. So seed both claims from the image before
+          # the main container starts. Reported upstream in
+          # Euro-Office/DocumentServer#381.
+          seed-volumes:
+            image:
+              repository: ghcr.io/euro-office/documentserver
+              tag: v9.3.4-hotfix.1@sha256:889e681923d2dcc8bdfb92fe128d10e185fcff880d302b6a0c0c7bf339499290
+            command:
+              - /bin/sh
+              - -c
+              # $${...} is escaped so Flux's postBuild envsubst leaves these
+              # shell variables alone.
+              - |
+                set -eu
+
+                mkdir -p /seed/data /seed/logs
+
+                # -n so anything already persisted is never clobbered.
+                cp -a -n /var/www/euro-office/Data/. /seed/data/ 2>/dev/null || true
+                cp -a -n /var/log/euro-office/documentserver/. /seed/logs/ 2>/dev/null || true
+
+                # Recreate the per-program log directories from the supervisor
+                # config itself rather than hardcoding the program list, so an
+                # image bump that adds a program keeps working.
+                for f in /etc/supervisor/conf.d/*.conf; do
+                  [ -e "$${f}" ] || continue
+                  sed -n 's|.*logfile=%(ENV_EO_LOG)s/\([^[:space:]]*\)/[^/[:space:]]*$|\1|p' "$${f}"
+                done | sort -u | while read -r d; do
+                  mkdir -p "/seed/logs/$${d}"
+                done
+
+                # Resolved by name from the image rather than hardcoding a uid,
+                # so a future rebuild that renumbers the account still works.
+                chown -R ds:ds /seed/data /seed/logs
+            resources:
+              requests:
+                cpu: 25m
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 128Mi
+                ephemeral-storage: 100Mi
+
+        pod:
+          nodeSelector:
+            kubernetes.io/arch: "amd64"
+
+        containers:
+          main:
+            image:
+              repository: ghcr.io/euro-office/documentserver
+              # Newest release tag upstream publishes; everything above it in
+              # the registry is a build-cache or prerelease tag.
+              tag: v9.3.4-hotfix.1@sha256:889e681923d2dcc8bdfb92fe128d10e185fcff880d302b6a0c0c7bf339499290
+
+            env:
+              # PostgreSQL, RabbitMQ and Redis are bundled in this image and
+              # default to localhost — no external DB_HOST/AMQP_HOST wiring.
+              JWT_ENABLED: "true"
+              JWT_HEADER: Authorization
+              # No access control on the demo app — must stay off.
+              EXAMPLE_ENABLED: "false"
+              WOPI_ENABLED: "false"
+              # Nextcloud resolves to the internal gateway
+              # (${SVC_ENVOY_GATEWAY_INTERNAL}) from inside the cluster, so the
+              # document server has to be allowed to fetch from RFC1918 space.
+              # This only widens the address ranges it will fetch from; TLS
+              # verification of cloud.${SECRET_ROOT_DOMAIN} is untouched.
+              ALLOW_PRIVATE_IP_ADDRESS: "true"
+              # Takes precedence over the entrypoint's generated
+              # $DATA_DIR/.private/jwt_secret fallback, so the value Nextcloud
+              # is configured with is the one actually in force.
+              JWT_SECRET:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: JWT_SECRET
+
+            probes:
+              # A cold start runs the bundled postgres bootstrap and the font
+              # cache generation (GENERATE_FONTS defaults on), so the startup
+              # budget is deliberately long: 60 * 10s = 10 minutes.
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthcheck
+                    port: 80
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                  failureThreshold: 60
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthcheck
+                    port: 80
+                  periodSeconds: 30
+                  failureThreshold: 5
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthcheck
+                    port: 80
+                  periodSeconds: 15
+                  failureThreshold: 3
+
+            # No Prometheus history yet — this app has never run here, so these
+            # are estimates, not the usual observed-p95 numbers. Re-derive the
+            # CPU request from 7d of data once it has soaked. Memory is the
+            # documented 4 GB upstream minimum, and per cluster convention it is
+            # a limit only (request == limit). No CPU limit: document conversion
+            # is bursty and must be allowed to spike. ephemeral-storage is set
+            # explicitly because the office LimitRange otherwise caps every
+            # container at 64Mi, and the document cache plus the generated font
+            # cache live under EO_ROOT on the container layer, not on a claim.
+            resources:
+              requests:
+                cpu: 100m
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 4Gi
+                ephemeral-storage: 2Gi
+
+    # advancedMounts rather than globalMounts: the init container has to see the
+    # image's baked directories to copy them, so the claims are mounted there at
+    # a staging path instead of over the top of their real locations.
+    persistence:
+      data:
+        existingClaim: eurooffice-data
+        advancedMounts:
+          main:
+            main:
+              - path: /var/www/euro-office/Data
+            seed-volumes:
+              - path: /seed/data
+      logs:
+        existingClaim: eurooffice-logs
+        advancedMounts:
+          main:
+            main:
+              - path: /var/log/euro-office/documentserver
+            seed-volumes:
+              - path: /seed/logs
+
+    service:
+      main:
+        controller: main
+        ports:
+          http:
+            port: 80
+
+    route:
+      app:
+        annotations:
+          external-dns.alpha.kubernetes.io/hostname: "eurooffice.${SECRET_ROOT_DOMAIN}"
+          gatus.home-operations.com/endpoint: |-
+            url: https://eurooffice.${SECRET_ROOT_DOMAIN}/healthcheck
+            conditions: ["[STATUS] == 200"]
+        hostnames:
+          - "eurooffice.${SECRET_ROOT_DOMAIN}"
+        # Same pair collabora uses: envoy-towonel is the public edge, so the
+        # Nextcloud browser session can reach the editor from off-LAN, and
+        # envoy-internal serves the LAN plus the in-cluster server-to-server
+        # callbacks. No WebSocket-specific route config is needed — Envoy
+        # upgrades HTTP/1.1 by default and the cluster-wide BackendTrafficPolicy
+        # already sets `timeout.http.requestTimeout: 0s`, which is what keeps a
+        # long-lived editing socket alive (collabora relies on the same thing).
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+          - name: envoy-internal
+            namespace: networking

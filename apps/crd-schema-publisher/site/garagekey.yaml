@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: k8s-schemas
+spec:
+  clusterRef:
+    name: garage-cluster
+    namespace: default
+  bucketPermissions:
+    - bucketRef:
+        name: k8s-schemas
+      read: true
+      write: true
+      owner: true

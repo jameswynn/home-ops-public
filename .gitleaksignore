@@ -1,0 +1,7 @@
+components/anubis/base/anubis/helmrelease.yaml:generic-api-key:29
+
+kubeconfig:private-key:19
+kubeconfig:private-key:20
+
+docker/vps/.doco-cd.yaml:generic-api-key:14
+docker/vps/.doco-cd.yaml:generic-api-key:17
