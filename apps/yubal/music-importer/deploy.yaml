@@ -1,0 +1,52 @@
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: music-importer
+spec:
+  image: forge.wynning.tech/james/music-importer
+  interval: 1m
+  secretRef:
+    name: forge-wynning-tech-creds
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: music-importer
+spec:
+  imageRepositoryRef:
+    name: music-importer
+  policy:
+    semver:
+      range: ">=0.0.1-0"
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: music-importer
+spec:
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: Flux Bot
+        email: flux@example.com
+      messageTemplate: |
+        music-importer: automated image update
+
+        Automation: {{ .AutomationObject.Namespace }}/{{ .AutomationObject.Name }}
+        {{- range .Changed.Changes }}
+        - {{ .OldValue }} -> {{ .NewValue }}
+        {{- end }}
+    push:
+      branch: main
+  update:
+    strategy: Setters
+    path: ./apps/yubal/music-importer

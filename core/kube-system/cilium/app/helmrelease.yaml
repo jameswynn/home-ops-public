@@ -1,0 +1,152 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: cilium
+spec:
+  interval: 5m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    # 1.18.12 is the current 1.18 patch. Includes CVE-2026-49445 (9.2, Envoy
+    # admin socket info disclosure, fixed in 1.18.8), CVE-2026-33726 (L7 proxy
+    # same-node NetworkPolicy bypass, 1.18.8), CVE-2026-41520 (cilium-bugtool
+    # secret leak, 1.18.9), CVE-2026-53935 (LRP hijack, 1.18.10)
+    tag: 1.18.12
+  # Official upstream OCI chart: the home-operations charts-mirror stopped
+  # mirroring cilium in Jan 2026 once cilium began publishing its own chart
+  url: oci://quay.io/cilium/charts/cilium
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/fluxcd-community/flux2-schemas/main/helmrelease-helm-v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cilium
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: cilium
+  install:
+    remediation:
+      retries: -1
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    policyAuditMode: false
+    autoDirectNodeRoutes: true
+    # policyEnforcementMode: "never" # Migration: Disable policy enforcement
+    bpf:
+      policyMapMax: 32768
+      # masquerade: true
+      # # Ref: https://github.com/siderolabs/talos/issues/10002
+      # hostLegacyRouting: true
+    bgpControlPlane:
+      enabled: true
+    cni:
+      # Required for pairing with Multus CNI
+      exclusive: false
+      # For initial migration
+      customConf: true
+      uninstall: false
+    cgroup:
+      automount:
+        enabled: false
+      hostRoot: /sys/fs/cgroup
+    # NOTE: devices might need to be set if you have more than one active NIC on your hosts
+    # devices: eno+ eth+
+    dashboards:
+      enabled: true
+    endpointRoutes:
+      enabled: true
+    envoy:
+      rollOutPods: true
+      prometheus:
+        serviceMonitor:
+          enabled: true
+    gatewayAPI:
+      enabled: true
+    hubble:
+      enabled: true
+      # peerService:
+      #   clusterDomain: cluster.local
+      relay:
+        enabled: true
+        rollOutPods: true
+      ui:
+        enabled: true
+        rollOutPods: true
+      export:
+        static:
+          allowList:
+            - '{"verdict":["AUDIT","DROPPED"]}'
+      # metrics:
+      #   enabled:
+      #   - dns:query;ignoreAAAA
+      #   - drop
+      #   - tcp
+      #   - flow
+      #   - icmp
+      #   - http
+    ipam:
+      mode: kubernetes
+    ipv4NativeRoutingCIDR: 10.42.0.0/15
+    k8sServiceHost: 10.1.0.10
+    k8sServicePort: 6443
+    kubeProxyReplacement: true
+    directRoutingSkipUnreachable: true
+    kubeProxyReplacementHealthzBindAddr: 0.0.0.0:10256
+    l2announcements:
+      enabled: true
+    loadBalancer:
+      algorithm: maglev
+      mode: dsr
+    localRedirectPolicy: true
+    operator:
+      # tolerations: []
+      dashboards:
+        enabled: true
+      prometheus:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+      # replicas: 1
+      rollOutPods: true
+    prometheus:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        trustCRDsExist: true
+    # cilium-agent p95 across nodes: 176m-318m (busiest node 318m).
+    # Request only — no limit, the dataplane must not be CPU-throttled.
+    resources:
+      requests:
+        cpu: 250m
+    rollOutCiliumPods: true
+    routingMode: native
+    securityContext:
+      capabilities:
+        ciliumAgent:
+          - CHOWN
+          - KILL
+          - NET_ADMIN
+          - NET_RAW
+          - IPC_LOCK
+          - SYS_ADMIN
+          - SYS_RESOURCE
+          - PERFMON
+          - BPF
+          - DAC_OVERRIDE
+          - FOWNER
+          - SETGID
+          - SETUID
+        cleanCiliumState:
+          - NET_ADMIN
+          - SYS_ADMIN
+          - SYS_RESOURCE
+    socketLB:
+      hostNamespaceOnly: true

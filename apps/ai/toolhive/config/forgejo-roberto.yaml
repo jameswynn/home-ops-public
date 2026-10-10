@@ -1,0 +1,49 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/toolhive.stacklok.dev/mcpserver_v1beta1.json
+# Forgejo backend for the `home-ops` Hermes profile, authenticating as the dedicated
+# `roberto` service account (#1561). See forgejo-hephaestus.yaml for the reasoning
+# behind stdio, --debug=false, and the tool-name prefixing — this instance differs
+# only in which PAT it mounts.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: forgejo-roberto
+spec:
+  image: git.b4mad.industries/agentic-forges/forgejo-mcp:v3.2.0@sha256:b10b55b47027af4c3fbb9337b20b54995cd2a6b1a010b458b0f034c3c5e04726
+  transport: streamable-http
+  mcpPort: 8080
+  groupRef:
+    name: all
+  args:
+    - --transport
+    - http
+    - --http-port
+    - "8080"
+    - --host
+    - 0.0.0.0
+    - --allowed-hosts
+    - localhost,127.0.0.1,mcp-forgejo-roberto,mcp-forgejo-roberto.ai.svc,mcp-forgejo-roberto.ai.svc.cluster.local,mcp-forgejo-roberto-proxy,mcp-forgejo-roberto-proxy.ai.svc,mcp-forgejo-roberto-proxy.ai.svc.cluster.local
+    - --allow-operator-token-fallback
+    - --debug=false
+    - --url
+    - https://forge.wynning.tech
+  secrets:
+    - name: toolhive-secrets
+      key: ROBERTO_FORGEJO_PAT
+      targetEnvName: FORGEJO_ACCESS_TOKEN
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: mcp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 100Mi

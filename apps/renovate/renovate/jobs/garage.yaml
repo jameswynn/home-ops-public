@@ -1,0 +1,32 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: &bucket renovate-cache
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  quotas:
+    maxSize: 5Gi
+  globalAlias: *bucket
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: renovate-cache
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  # No importKey: the operator mints the key and writes it to a Secret named
+  # after this GarageKey, using the default secretTemplate key names
+  # (access-key-id, secret-access-key, endpoint, region). forgejo.yaml consumes
+  # the first two as AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
+  bucketPermissions:
+    - bucketRef:
+        name: renovate-cache
+      read: true
+      write: true

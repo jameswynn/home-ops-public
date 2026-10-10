@@ -1,0 +1,135 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/postgresql.cnpg.io/cluster_v1.json
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: memini-postgres
+  namespace: ai
+spec:
+  # Single instance on purpose: this is a small, rebuildable store and the
+  # volume is longhorn (replicated at the block layer), so instance-level HA
+  # would only buy faster failover at 3x the write amplification.
+  instances: 1
+  # VectorChord operand. memini's postgres store runs
+  # `CREATE EXTENSION IF NOT EXISTS vchord CASCADE` and builds its ANN index as
+  # `USING vchordrq (embedding vector_l2_ops)`, so plain postgresql:16.x will
+  # not work here. 16-1.1.1 is the same VectorChord major upstream's own
+  # compose.yaml tests against (vchord-postgres:pg18-v1.1.1).
+  #
+  # Note this is *ahead* of immich's 16-0.3.0 — deliberate, because this is a
+  # fresh store with nothing to reindex. Do not "align" the two by downgrading.
+  imageName: ghcr.io/tensorchord/cloudnative-vectorchord:16-1.1.1
+  primaryUpdateStrategy: unsupervised
+  storage:
+    size: 10Gi
+    storageClass: longhorn
+  bootstrap:
+    initdb:
+      database: memini
+      owner: memini
+      # Pre-create the extension as superuser during bootstrap. memini issues
+      # the same statement at migrate time, but the `memini` role is not a
+      # superuser and vchord is not a trusted extension; `IF NOT EXISTS`
+      # short-circuits on the existence check before the ACL check, so the
+      # app-side statement then no-ops instead of failing.
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vchord CASCADE;
+  # No CPU limit (repo-wide convention); memory request == limit. These are
+  # cold-start guesses for a store with no traffic yet — resize from the
+  # observed p95 once it has run for a week.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 768Mi
+      ephemeral-storage: 200Mi
+    limits:
+      memory: 768Mi
+      ephemeral-storage: 200Mi
+  postgresql:
+    shared_preload_libraries:
+      - "vchord.so"
+    parameters:
+      max_connections: "100"
+      shared_buffers: 128MB
+  monitoring:
+    enablePodMonitor: true
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: memini-postgres
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                  - amd64
+      # muspelheim's etcd WAL shares an LVM VG with the Longhorn replica store
+      # on a DRAM-less BX500; postgres is the heaviest writer we have. Soft
+      # rather than required so a single-instance cluster still schedules if
+      # every other node is unavailable.
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                  - muspelheim
+---
+# yaml-language-server: $schema=https://github.com/datreeio/CRDs-catalog/raw/refs/heads/main/barmancloud.cnpg.io/objectstore_v1.json
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: memini-postgres
+  namespace: ai
+spec:
+  retentionPolicy: 30d
+  instanceSidecarConfiguration:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+  configuration:
+    # serverName defaults to the cluster name, so this lands under
+    # s3://postgresql/memini-postgres/ and cannot collide with immich's.
+    destinationPath: s3://postgresql/
+    endpointURL: https://${SECRET_GARAGE_URL}
+    s3Credentials:
+      region:
+        name: postgresql-garage
+        key: GARAGE_REGION
+      accessKeyId:
+        name: postgresql-garage
+        key: GARAGE_ACCESS_KEY
+      secretAccessKey:
+        name: postgresql-garage
+        key: GARAGE_SECRET_KEY
+    wal:
+      compression: zstd
+    data:
+      compression: gzip
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/postgresql.cnpg.io/scheduledbackup_v1.json
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: memini-postgres
+  namespace: ai
+spec:
+  schedule: "0 30 3 * * *"
+  immediate: true
+  backupOwnerReference: self
+  cluster:
+    name: memini-postgres
+  # The cluster archives via the barman-cloud plugin and has no spec.backup
+  # section; without these, method defaults to barmanObjectStore and every run
+  # fails with "cluster has no backup section".
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

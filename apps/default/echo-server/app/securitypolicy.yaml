@@ -1,0 +1,17 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: echo-server
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: echo-server
+  oidc:
+    provider:
+      issuer: "https://auth.wynning.tech/application/o/echo-server/"
+    clientID: echo-server
+    clientSecret:
+      name: echo-server-oidc
+    redirectURL: "https://echo.wynning.tech/oauth2/callback"
+    logoutPath: "/oauth2/logout"

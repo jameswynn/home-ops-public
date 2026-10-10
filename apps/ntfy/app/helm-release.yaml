@@ -1,0 +1,97 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app ntfy
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  install:
+    createNamespace: true
+    remediation:
+      retries: 5
+  upgrade:
+    remediation:
+      retries: 5
+  values:
+    controllers:
+      main:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        strategy: Recreate
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+        containers:
+          main:
+            image:
+              repository: mirror.gcr.io/binwiederhier/ntfy
+              tag: v2.28.0
+            args:
+              - "serve"
+            env:
+              TZ: '${CLUSTER_TZ}'
+              NTFY_DEBUG: false
+              NTFY_LOG_LEVEL: INFO
+            # CPU from 7d of Prometheus data: p50 0m, p95 2m, max 4m. 25m is
+            # the practical request floor. No CPU limit, per the cluster
+            # convention — notification delivery is latency-sensitive and
+            # should never be throttled.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 100Mi
+                ephemeral-storage: 100Mi
+              limits:
+                memory: 250Mi
+                ephemeral-storage: 200Mi
+
+    service:
+      main:
+        controller: main
+        ports:
+          http:
+            port: 8080
+
+    route:
+      main:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "ntfy.sh"
+          gethomepage.dev/description: "Notification Service"
+          gethomepage.dev/group: "Home Automation"
+          gethomepage.dev/icon: "ntfy.png"
+          external-dns.alpha.kubernetes.io/hostname: '{{ .Release.Name }}.${SECRET_ROOT_DOMAIN}'
+        hostnames:
+          - '{{ .Release.Name }}.${SECRET_ROOT_DOMAIN}'
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+          - name: envoy-internal
+            namespace: networking
+
+    persistence:
+      attachments:
+        type: emptyDir
+        sizeLimit: 200Mi
+        globalMounts:
+          - path: /var/cache/ntfy
+            readOnly: false
+      server-yml:
+        type: configMap
+        name: ntfy-configmap
+        globalMounts:
+          - path: /etc/ntfy/server.yml
+            subPath: server.yml
+            readOnly: true
+      data:
+        enabled: true
+        existingClaim: ntfy
+        globalMounts:
+          - path: /var/lib/ntfy

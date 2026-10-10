@@ -1,0 +1,1749 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/grafana.integreatly.org/grafanadashboard_v1beta1.json
+#
+# Hand-authored: ghostrecon ships alert rules but no dashboard. The rules answer
+# "page me when it breaks"; this answers "is it working, and what needs
+# attention" at a glance.
+#
+# The data-quality section is built on the two identifying gauge families, which
+# are parallel rather than alternatives:
+#
+#   ghostrecon_account_data_issues{ghostrecon_account_name, issue}
+#       issues that concern a Ghostfolio account
+#   ghostrecon_data_issue_detail{ghostrecon_source, ghostrecon_subject,
+#                                ghostrecon_subject_name, issue}
+#       issues that concern something else — a bank connection, a portfolio
+#
+# Both are set from the last run and both zero out a series when the issue is
+# fixed, which is why every panel here filters `> 0` rather than testing
+# absence: an OTel gauge keeps every attribute set it has seen for the life of
+# the process, so a fixed issue can come back as an explicit zero rather than
+# disappearing.
+#
+# EVERY expression aggregates, and none of them may be "simplified" back to a
+# bare metric selector. The scrape adds pod/instance/job labels, so a bare
+# selector is one series per pod that has ever run inside the dashboard's
+# window — and a stat panel renders one number per series. After a config edit
+# rolls the pod, `ghostrecon_plan_portfolios{disposition="unmapped"}` showed
+# `10 10 7`: two dead pods reporting the problem the third had just had fixed.
+# Worse on the health row, where a dead pod's frozen "last success" age stays
+# small and green forever and hides a genuinely stale reconcile behind it.
+#
+# `max()` and `max by (...)` are what drop those labels. Aggregating is safe
+# here because the controller is replicas: 1 with strategy: Recreate, so two
+# pods are never live at once and the max is simply the only pod there is. The
+# `max by (...)` forms are also literally the alert expressions from
+# prometheusrule.yaml, so a panel and the alert beside it cannot disagree.
+#
+# The stat panels are instant queries for the same reason. They are answering
+# "what is true now", and a range query reduced by lastNotNull answers "what
+# was true the last time anything reported" — which, if the pod is down, is a
+# reassuring green number from a process that no longer exists. The timeseries
+# panels stay range queries; they are asking about history on purpose.
+#
+# Both families are turned off by `metrics.per-account-labels: false`. If that
+# is ever flipped, the four stats keep working only where they read an
+# aggregate — "Unmapped portfolios" reads ghostrecon_plan_portfolios for exactly
+# that reason — and the three tables go empty.
+#
+# Requires ghostrecon >= the release carrying PR #30 (closes #29). Before that,
+# provider_error and portfolio_unmapped were bare counts and these tables were
+# Loki panels string-matching on log prose.
+#
+# Label values are taken from the live scrape, not guessed: peer_service is one
+# of simplefin/ghostfolio/rapidapi, outcome is success/failure, and run_kind has
+# a single value (reconcile) so nothing matches on it.
+#
+# No ${...} anywhere in the JSON below — Flux postBuild substitution runs over
+# this manifest and would eat a Grafana template variable written that way.
+# $__interval passes through untouched (verified against the live coraza
+# dashboard), which is why every range selector uses it.
+#
+# The tables show real bank, account and portfolio names. That is the documented
+# trade-off for metrics.per-account-labels: true in config.sops.yaml, which
+# GhostreconCashMismatch, GhostreconUnconfiguredPortfolio and
+# GhostreconProviderError also depend on. This Grafana is internal-only.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: ghostrecon
+spec:
+  allowCrossNamespaceImport: true
+  resyncPeriod: 10m
+  instanceSelector:
+    matchLabels:
+      grafana.internal/instance: grafana
+  datasources:
+    - inputName: DS_PROMETHEUS
+      datasourceName: Prometheus
+  json: |
+    {
+      "title": "Ghostrecon",
+      "uid": "ghostrecon",
+      "tags": [
+        "finance",
+        "ghostfolio",
+        "ghostrecon"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "editable": true,
+      "refresh": "5m",
+      "time": {
+        "from": "now-7d",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "type": "row",
+          "title": "Is it working?",
+          "collapsed": false,
+          "id": 1,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "panels": []
+        },
+        {
+          "type": "stat",
+          "title": "Last successful reconcile",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 2,
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 0,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 93600
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "time() - max(ghostrecon_run_last_success_timestamp_seconds)",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Age of the last reconcile that finished cleanly. Red past 26h \u2014 the schedule is daily (0 6 * * *), so anything older means a run was missed, not merely slow."
+        },
+        {
+          "type": "stat",
+          "title": "Next run in",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 3,
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 4,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max(ghostrecon_scheduler_next_run_timestamp_seconds) - time()",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Counts down to the next scheduled reconcile. Written by the scheduler, so if this is absent or not moving the scheduler itself is not ticking \u2014 a more direct answer than inferring it from the last success."
+        },
+        {
+          "type": "stat",
+          "title": "Consecutive failures",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 4,
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 8,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max(ghostrecon_run_consecutive_failures)",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Written by the scheduler after every tick. Non-zero means the last run(s) failed; GhostreconConsecutiveFailures fires at 3."
+        },
+        {
+          "type": "stat",
+          "title": "SimpleFIN last success",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 5,
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 12,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 93600
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "time() - max(ghostrecon_target_last_success_timestamp_seconds{peer_service=\"simplefin\"})",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "This is the bridge as a whole. It stays green while an individual bank connection is expired, because the fetch still succeeds \u2014 that case is the \"Banks needing attention\" panel below, and GhostreconProviderError."
+        },
+        {
+          "type": "stat",
+          "title": "Ghostfolio last success",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 6,
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 16,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 93600
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "time() - max(ghostrecon_target_last_success_timestamp_seconds{peer_service=\"ghostfolio\"})",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Reached in-cluster at ghostfolio.ghostfolio.svc:3333."
+        },
+        {
+          "type": "stat",
+          "title": "RapidAPI last success (no threshold)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 7,
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 20,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "time() - max(max_over_time(ghostrecon_target_last_success_timestamp_seconds{peer_service=\"rapidapi\"}[30d]))",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Deliberately uncoloured. Valuations are cached 30 days (valuations.ttl-days), so a large age here is the healthy case \u2014 no threshold separates a working TTL from a broken credential. Same reasoning as the missing rapidapi reachability alert. The only panel here that looks back over a window rather than at now: unlike SimpleFIN and Ghostfolio this target is not touched every run, so the live process usually has no such series at all and a point-in-time read would sit at \"No data\" for weeks. max_over_time asks the question that actually spans pod restarts \u2014 when was a valuation last fetched, by anyone \u2014 and the outer max() keeps that one series."
+        },
+        {
+          "type": "row",
+          "title": "Run health",
+          "collapsed": false,
+          "id": 8,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 5
+          },
+          "panels": []
+        },
+        {
+          "type": "timeseries",
+          "title": "Runs by outcome",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 9,
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 0,
+            "y": 6
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "bars",
+                "lineWidth": 1,
+                "fillOpacity": 30,
+                "showPoints": "auto",
+                "pointSize": 5,
+                "barAlignment": 0,
+                "axisPlacement": "auto",
+                "spanNulls": true,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [],
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (outcome) (increase(ghostrecon_run_duration_seconds_count[$__interval]))",
+              "refId": "A",
+              "legendFormat": "{{outcome}}"
+            }
+          ],
+          "description": "One bar per interval. On a daily schedule, pick a range of a week or more or the buckets will be empty."
+        },
+        {
+          "type": "timeseries",
+          "title": "Mean run duration",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 10,
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 8,
+            "y": 6
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "auto",
+                "pointSize": 5,
+                "barAlignment": 0,
+                "axisPlacement": "auto",
+                "spanNulls": true
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [],
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(increase(ghostrecon_run_duration_seconds_sum[$__interval])) / sum(increase(ghostrecon_run_duration_seconds_count[$__interval]))",
+              "refId": "A",
+              "legendFormat": "mean"
+            }
+          ],
+          "description": "Mean rather than a quantile: a once-a-day job has one sample per bucket, so quantiles would be theatre. This is the trend GhostreconRunDurationApproachingInterval watches."
+        },
+        {
+          "type": "timeseries",
+          "title": "Consecutive failures",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 11,
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 6
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "auto",
+                "pointSize": 5,
+                "barAlignment": 0,
+                "axisPlacement": "auto",
+                "spanNulls": true
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [],
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max(ghostrecon_run_consecutive_failures)",
+              "refId": "A",
+              "legendFormat": "failures"
+            }
+          ],
+          "description": "Should be a flat zero. A staircase means the job is failing every tick, not intermittently."
+        },
+        {
+          "type": "row",
+          "title": "Data quality \u2014 what needs attention",
+          "collapsed": false,
+          "id": 12,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 13
+          },
+          "panels": []
+        },
+        {
+          "type": "stat",
+          "title": "Banks needing attention",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 13,
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 14
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "count(max by (ghostrecon_source, ghostrecon_subject) (ghostrecon_data_issue_detail{issue=\"provider_error\"}) > 0) or vector(0)",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Connections at the provider that need attention, usually re-authentication at the SimpleFIN bridge. Named individually in the table below. Counts series rather than summing the counter because the gauge is set from the last run and zeroed when the connection is fixed, so this falls back to 0 on its own."
+        },
+        {
+          "type": "stat",
+          "title": "Unmapped portfolios",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 14,
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 14
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max(ghostrecon_plan_portfolios{disposition=\"unmapped\"})",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Portfolios in neither the ignore list nor the map list, silently dropped from every plan \u2014 usually newly opened accounts. Named individually in the table below. This reads the plan aggregate rather than the detail gauge on purpose: it is the one series that survives metrics.per-account-labels being turned off."
+        },
+        {
+          "type": "stat",
+          "title": "Accounts without portfolios",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 15,
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 14
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "count(max by (ghostrecon_account_name) (ghostrecon_account_data_issues{issue=\"account_without_portfolios\"}) > 0) or vector(0)",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Ghostfolio accounts nothing feeds. Often legitimate (a manually maintained account), which is why this is uncoloured. Named individually in the table below."
+        },
+        {
+          "type": "stat",
+          "title": "Cash balance mismatches",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 16,
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 14
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "count(max by (ghostrecon_account_name) (ghostrecon_account_data_issues{issue=\"cash_balance_mismatch\"}) > 0) or vector(0)",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "A reported balance disagreeing with the cash holdings that should sum to it \u2014 usually a money-market ticker missing from that account's cash-assets. GhostreconCashMismatch alerts on this; the table below names the account."
+        },
+        {
+          "type": "table",
+          "title": "Issues by account",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 17,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 18
+          },
+          "description": "Issues ghostrecon can attribute to a named Ghostfolio account, from the last run. Issues that concern something other than an account are in the two tables below. The > 0 filter matters: a fixed issue can be republished as an explicit zero rather than dropped, because an OTel gauge keeps every attribute set it has seen for the life of the process.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "filterable": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "sortBy": [
+              {
+                "displayName": "Issue",
+                "desc": false
+              }
+            ]
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (ghostrecon_account_name, issue) (ghostrecon_account_data_issues) > 0",
+              "refId": "A",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "ghostrecon_account_name": "Account",
+                  "issue": "Issue",
+                  "Value": "Count"
+                },
+                "indexByName": {}
+              }
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Issues by kind",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 18,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 18
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "bars",
+                "lineWidth": 1,
+                "fillOpacity": 30,
+                "showPoints": "auto",
+                "pointSize": 5,
+                "barAlignment": 0,
+                "axisPlacement": "auto",
+                "spanNulls": true,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "sum"
+              ],
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (issue) (increase(ghostrecon_data_issues_total[$__interval]))",
+              "refId": "A",
+              "legendFormat": "{{issue}}"
+            }
+          ],
+          "description": "Problems that do not fail a run but make its plan mean less than it appears to. This is the aggregate counter; the tables name the individual subjects. Symbol-scoped issues (activity_missing_data_source, zero_quantity_holding_dropped, asset_target_quantity_missing) appear only here \u2014 tickers are deliberately kept out of every label to bound cardinality."
+        },
+        {
+          "type": "table",
+          "title": "Banks needing attention",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 19,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 26
+          },
+          "description": "The subject is the provider's own error text, because SimpleFIN's errors array is prose with no institution field \u2014 but that prose is what names the bank. \"Auth required\" means re-authenticate that connection at the bridge. Everything else still reconciles, which is why the SimpleFIN health stat above stays green. GhostreconProviderError alerts on this after 1h.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "filterable": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "sortBy": [
+              {
+                "displayName": "Provider",
+                "desc": false
+              }
+            ]
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (ghostrecon_source, ghostrecon_subject) (ghostrecon_data_issue_detail{issue=\"provider_error\"}) > 0",
+              "refId": "A",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "ghostrecon_source": "Provider",
+                  "ghostrecon_subject": "Reported problem",
+                  "Value": "Count"
+                },
+                "indexByName": {}
+              }
+            }
+          ]
+        },
+        {
+          "type": "table",
+          "title": "Portfolios needing configuration",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 20,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 26
+          },
+          "description": "portfolio_unmapped: paste the id into config.yaml with an action: map and a Ghostfolio account UUID, or an explicit action: ignore. mapping_target_missing: the portfolio maps to a Ghostfolio account that no longer exists. Provider is part of the key because a portfolio id is only unique within its provider.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "filterable": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "sortBy": [
+              {
+                "displayName": "Issue",
+                "desc": false
+              }
+            ]
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (issue, ghostrecon_source, ghostrecon_subject, ghostrecon_subject_name) (ghostrecon_data_issue_detail{issue=~\"portfolio_unmapped|mapping_target_missing\"}) > 0",
+              "refId": "A",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "issue": "Issue",
+                  "ghostrecon_source": "Provider",
+                  "ghostrecon_subject": "Portfolio id",
+                  "ghostrecon_subject_name": "Name",
+                  "Value": "Count"
+                },
+                "indexByName": {}
+              }
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "title": "Plan shape (what the last run would write)",
+          "collapsed": false,
+          "id": 21,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 34
+          },
+          "panels": []
+        },
+        {
+          "type": "stat",
+          "title": "Accounts changed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 22,
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 35
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max(ghostrecon_plan_accounts{state=\"changed\"})",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Of ghostrecon_plan_accounts{state=\"total\"}. With auto-apply off this is a backlog waiting on a manual `ghostrecon apply`."
+        },
+        {
+          "type": "stat",
+          "title": "Accounts total",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 23,
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 35
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max(ghostrecon_plan_accounts{state=\"total\"})",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Balance updates pending",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 24,
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 35
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max(ghostrecon_plan_balance_updates)",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Monetary amounts are deliberately never exported; read the plan itself for the numbers."
+        },
+        {
+          "type": "stat",
+          "title": "Suppressed differences",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 25,
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 35
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max(ghostrecon_plan_suppressed_differences)",
+              "refId": "A",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "description": "Differences below the 0.01 share minimum (--min-quantity), dropped from the plan as noise."
+        },
+        {
+          "type": "timeseries",
+          "title": "Planned activities by type",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 26,
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 39
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "auto",
+                "pointSize": 5,
+                "barAlignment": 0,
+                "axisPlacement": "auto",
+                "spanNulls": true
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [],
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (activity_type) (ghostrecon_plan_activities)",
+              "refId": "A",
+              "legendFormat": "{{activity_type}}"
+            }
+          ],
+          "description": "Empty until a run proposes an activity \u2014 the metric family is not emitted at zero. A number that only climbs is the signal to go run an apply."
+        },
+        {
+          "type": "timeseries",
+          "title": "Portfolio dispositions",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 27,
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 39
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "auto",
+                "pointSize": 5,
+                "barAlignment": 0,
+                "axisPlacement": "auto",
+                "spanNulls": true
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [],
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (disposition) (ghostrecon_plan_portfolios)",
+              "refId": "A",
+              "legendFormat": "{{disposition}}"
+            }
+          ],
+          "description": "seen / ignored / unmapped. unmapped climbing means new accounts have appeared at the provider."
+        },
+        {
+          "type": "row",
+          "title": "Upstream HTTP",
+          "collapsed": false,
+          "id": 28,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 46
+          },
+          "panels": []
+        },
+        {
+          "type": "timeseries",
+          "title": "Request errors by target",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 29,
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 47
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "auto",
+                "pointSize": 5,
+                "barAlignment": 0,
+                "axisPlacement": "auto",
+                "spanNulls": true
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [],
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (peer_service, error_type) (rate(ghostrecon_http_client_request_duration_seconds_count{error_type!=\"\"}[$__interval]))",
+              "refId": "A",
+              "legendFormat": "{{peer_service}} {{error_type}}"
+            }
+          ],
+          "description": "connect/timeout means the upstream is unreachable and retrying later is sensible. http_4xx means the request itself is wrong and will fail identically next time \u2014 usually an expired credential."
+        },
+        {
+          "type": "timeseries",
+          "title": "p95 request latency by target",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 30,
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 47
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "auto",
+                "pointSize": 5,
+                "barAlignment": 0,
+                "axisPlacement": "auto",
+                "spanNulls": true
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [],
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum by (le, peer_service) (rate(ghostrecon_http_client_request_duration_seconds_bucket[$__interval])))",
+              "refId": "A",
+              "legendFormat": "{{peer_service}}"
+            }
+          ],
+          "description": "SimpleFIN's 90-day window is genuinely slow; Ghostfolio is local and should not be."
+        }
+      ]
+    }

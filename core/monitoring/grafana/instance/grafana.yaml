@@ -1,0 +1,79 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/grafana.integreatly.org/grafana_v1beta1.json
+apiVersion: grafana.integreatly.org/v1beta1
+kind: Grafana
+metadata:
+  name: grafana
+  labels:
+    grafana.internal/instance: grafana
+spec:
+  config:
+    analytics:
+      check_for_updates: "false"
+      check_for_plugin_updates: "false"
+      reporting_enabled: "false"
+    auth:
+      disable_login_form: "false"
+    auth.anonymous:
+      enabled: "false"
+    log:
+      mode: console
+    metrics:
+      enabled: "true"
+    news:
+      news_feed_enabled: "false"
+    plugins:
+      plugin_admin_enabled: "false"
+    server:
+      root_url: "https://grafana.${SECRET_INTERNAL_DOMAIN}"
+      enable_gzip: "true"
+  deployment:
+    spec:
+      strategy:
+        type: Recreate
+      template:
+        spec:
+          containers:
+            - name: grafana
+              env:
+                - name: GF_SECURITY_ADMIN_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: grafana-admin
+                      key: admin-user
+                - name: GF_SECURITY_ADMIN_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: grafana-admin
+                      key: admin-password
+                - name: GF_INSTALL_PLUGINS
+                  value: natel-discrete-panel,pr0ps-trackmap-panel,grafana-piechart-panel,grafana-clock-panel,vonage-status-panel,grafana-worldmap-panel
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 500Mi
+                  ephemeral-storage: 200Mi
+                limits:
+                  memory: 1000Mi
+                  ephemeral-storage: 200Mi
+  httpRoute:
+    metadata:
+      annotations:
+        gethomepage.dev/enabled: "true"
+        gethomepage.dev/name: "Grafana"
+        gethomepage.dev/description: "Monitoring and Logging"
+        gethomepage.dev/group: "Operations"
+        gethomepage.dev/icon: "grafana.png"
+        gethomepage.dev/weight: "10"
+        gethomepage.dev/pod-selector: "app = grafana"
+        internal.wynning.tech/hostname: "grafana.${SECRET_INTERNAL_DOMAIN}"
+    spec:
+      hostnames:
+        - "grafana.${SECRET_INTERNAL_DOMAIN}"
+      parentRefs:
+        - name: envoy-internal
+          namespace: networking
+      rules:
+        - backendRefs:
+            - name: grafana-service
+              port: 3000

@@ -1,0 +1,33 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: gotosocial
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  quotas:
+    maxSize: 100Gi
+  globalAlias: gotosocial
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: gotosocial
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  importKey:
+    secretRef:
+      name: gotosocial
+    accessKeyIdKey: GARAGE_ACCESS_KEY
+    secretAccessKeyKey: GARAGE_SECRET_KEY
+  bucketPermissions:
+    - bucketRef:
+        name: gotosocial
+      read: true
+      write: true
