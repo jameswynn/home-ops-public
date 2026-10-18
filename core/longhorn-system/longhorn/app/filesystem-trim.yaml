@@ -1,0 +1,16 @@
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: cleanup-trim
+spec:
+  # 8 AM local (13:00 UTC). Still after snapshot-delete at 0 5, so trim works
+  # against the shortened snapshot chain. Moved off 0 6 (11:00 UTC): it collided
+  # with the minio->NAS/B2 longhorn mirror, and the combined I/O stalled etcd
+  # commits up to 4s on muspelheim, dropping the k3s leader-election lease.
+  # Keep >=1h clear of that mirror, outside kured's 02:00-05:00 reboot window.
+  cron: "0 8 * * *"
+  task: "filesystem-trim"
+  concurrency: 2 # Required — Longhorn defaults it to 0, which deadlocks the job's worker pool
+  # No retain: filesystem-trim creates nothing to retain, and the admission webhook rewrites it to 0 anyway
+  groups:
+    - default # Applies to all PVCs in the default group

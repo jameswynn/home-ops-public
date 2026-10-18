@@ -1,0 +1,52 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: konflate
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: konflate
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    config:
+      repo: forgejo://forge.wynning.tech/james/home-ops
+      # Empty = repo root, which is what our root-relative spec.path values resolve against.
+      clusterPath: ""
+      # Write-back: both need secret.existingSecret to carry KONFLATE_WRITE_TOKEN.
+      statusChecks: true
+      prComments: true
+      publicUrl: https://konflate.${SECRET_INTERNAL_DOMAIN}
+      # Read-only MCP endpoint at /mcp; internal-only via envoy-internal.
+      mcp: true
+    secret:
+      existingSecret: konflate-secret
+    httpRoute:
+      enabled: true
+      parentRefs:
+        - name: envoy-internal
+          namespace: networking
+      hostnames:
+        - konflate.${SECRET_INTERNAL_DOMAIN}
+    monitoring:
+      serviceMonitor:
+        enabled: true
+    # CPU from 7d of Prometheus data: p50 0.4m, p95 18.9m, max 182.2m. Idle
+    # most of the time, then spikes hard while it renders a Kustomization —
+    # the 50m request already covers p95 with headroom, and dropping the 2000m
+    # limit lets the render bursts run at full speed. No CPU limit, per the
+    # cluster convention.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 2Gi

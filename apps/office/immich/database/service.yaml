@@ -1,0 +1,20 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-postgres-lb
+  namespace: office
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: "immich-postgres.${SECRET_INTERNAL_DOMAIN}"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  loadBalancerIP: ${SVC_IMMICH_POSTGRESQL_ADDR}
+  ports:
+    - name: postgres
+      port: 5432
+      protocol: TCP
+      targetPort: 5432
+  selector:
+    cnpg.io/cluster: immich-postgres
+    cnpg.io/instanceRole: primary

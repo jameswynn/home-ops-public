@@ -1,0 +1,30 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagereferencegrant_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageReferenceGrant
+metadata:
+  name: garage-web
+  namespace: default
+spec:
+  from:
+    - kind: GarageBucket
+      namespace: garage-web
+  to:
+    - kind: GarageCluster
+      name: garage-cluster
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagereferencegrant_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageReferenceGrant
+metadata:
+  name: crd-schema-publisher
+  namespace: default
+spec:
+  from:
+    - kind: GarageBucket
+      namespace: crd-schema-publisher
+    - kind: GarageKey
+      namespace: crd-schema-publisher
+  to:
+    - kind: GarageCluster
+      name: garage-cluster
