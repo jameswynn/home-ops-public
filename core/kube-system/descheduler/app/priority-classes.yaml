@@ -1,0 +1,11 @@
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: batch-low
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: >-
+  Rebuildable or outage-tolerant application work. This class is not a global
+  default and does not by itself make a workload eligible for descheduling.

@@ -1,0 +1,246 @@
+---
+version: "3"
+
+tasks:
+
+  restore:
+    desc: 'Refresh a VolSync ReplicationDestination so the populator restores from the LATEST Kopia snapshot. Args: app=<name> namespace=<ns>.'
+    interactive: true
+    vars:
+      app: '{{ or .app (fail "app is required (e.g. `task volsync:restore app=simple-todo namespace=simple-todo`)") }}'
+      namespace: '{{ or .namespace (fail "namespace is required") }}'
+      trigger: 'restore-{{ now | date "20060102-150405" }}'
+    preconditions:
+      - kubectl -n {{.namespace}} get replicationdestination {{.app}}-dst
+    cmds:
+      - cmd: |
+          echo "Bumping ReplicationDestination/{{.app}}-dst trigger.manual → {{.trigger}}"
+          kubectl -n {{.namespace}} patch replicationdestination {{.app}}-dst --type merge \
+            -p '{"spec":{"trigger":{"manual":"{{.trigger}}"}}}'
+      - cmd: |
+          echo "Waiting for restore mover to complete (timeout 10m)..."
+          kubectl -n {{.namespace}} wait replicationdestination/{{.app}}-dst \
+            --for=jsonpath='{.status.lastManualSync}'={{.trigger}} --timeout=10m
+      - cmd: |
+          echo ""
+          echo "latestImage now points at:"
+          kubectl -n {{.namespace}} get replicationdestination {{.app}}-dst \
+            -o jsonpath='{.status.latestImage.name}{"\n"}'
+          echo ""
+          echo "To actually restore the PVC's data:"
+          echo "  flux -n {{.namespace}} suspend hr {{.app}}"
+          echo "  kubectl -n {{.namespace}} scale deploy,sts -l app.kubernetes.io/name={{.app}} --replicas=0"
+          echo "  kubectl -n {{.namespace}} delete pvc {{.app}}"
+          echo "  flux -n {{.namespace}} resume hr {{.app}}"
+          echo ""
+          echo "Flux recreates the PVC; the populator clones from the snapshot above."
+          echo "Or use task volsync:bounce app={{.app}} namespace={{.namespace}}"
+
+  bounce:
+    desc: 'Bounce a VolSync backed PVC so the populator restores from the LATEST Kopia snapshot. Args: app=<name> namespace=<ns>.'
+    interactive: true
+    vars:
+      app: '{{ or .app (fail "app is required (e.g. `task volsync:restore app=simple-todo namespace=simple-todo`)") }}'
+      namespace: '{{ or .namespace (fail "namespace is required") }}'
+    cmds:
+      - cmd: |
+          flux -n {{.namespace}} suspend hr {{.app}}
+          export REPLICAS=$(kubectl -n {{.namespace}} get deploy,sts -l app.kubernetes.io/name={{.app}} -o jsonpath='{.items[0].spec.replicas}')
+          kubectl -n {{.namespace}} scale deploy,sts -l app.kubernetes.io/name={{.app}} --replicas=0
+          kubectl -n {{.namespace}} delete pvc {{.app}}
+          flux -n {{.namespace}} resume hr {{.app}}
+          flux -n {{.namespace}} reconcile ks {{.app}}
+          kubectl -n {{.namespace}} scale deploy,sts -l app.kubernetes.io/name={{.app}} --replicas=$REPLICAS
+
+  backup:
+    desc: 'Force an immediate VolSync backup, then restore the schedule. Args: app=<name> namespace=<ns>. ks=<name> (defaults to app).'
+    interactive: true
+    vars:
+      app: '{{ or .app (fail "app is required (e.g. `task volsync:backup app=simple-todo namespace=simple-todo`)") }}'
+      namespace: '{{ or .namespace (fail "namespace is required") }}'
+      ks: '{{ .ks | default .app }}'
+      trigger: 'backup-{{ now | date "20060102-150405" }}'
+    preconditions:
+      - kubectl -n {{.namespace}} get replicationsource {{.app}}
+    cmds:
+      - cmd: |
+          export SCHED=$(kubectl -n {{.namespace}} get replicationsource {{.app}} -o jsonpath='{.spec.trigger.schedule}')
+          echo "Saved schedule: $SCHED"
+          flux -n {{.namespace}} suspend ks {{.ks}}
+          echo "Triggering manual backup: {{.trigger}}"
+          kubectl -n {{.namespace}} patch replicationsource {{.app}} --type merge \
+            -p '{"spec":{"trigger":{"manual":"{{.trigger}}","schedule":null}}}'
+          echo "Waiting for backup mover to complete (timeout 30m)..."
+          kubectl -n {{.namespace}} wait replicationsource/{{.app}} \
+            --for=jsonpath='{.status.lastManualSync}'={{.trigger}} --timeout=30m
+          echo "Restoring schedule and resuming ks"
+          kubectl -n {{.namespace}} patch replicationsource {{.app}} --type merge \
+            -p "{\"spec\":{\"trigger\":{\"manual\":null,\"schedule\":\"$SCHED\"}}}"
+          flux -n {{.namespace}} resume ks {{.ks}}
+          echo ""
+          echo "Backup complete. Latest sync:"
+          kubectl -n {{.namespace}} get replicationsource {{.app}} -o jsonpath='{.status.lastSyncTime}{"\n"}'
+
+  seed:
+    desc: 'Seed Kopia from an EXISTING PVC before migrating an app to VolSync. Quiesces the app (suspend HR + scale to 0) for a consistent snapshot, creates a transient ReplicationSource named after the app, runs one backup, then tears the source down (snapshot on NFS is kept) and brings the app back. Args: app=<name> namespace=<ns>. Optional: pvc=<existing-pvc> (default app), nfspath=/volume1/kopia.'
+    interactive: true
+    vars:
+      app: '{{ or .app (fail "app is required (e.g. `task volsync:seed app=shlink namespace=default pvc=shlink`)") }}'
+      namespace: '{{ or .namespace (fail "namespace is required") }}'
+      pvc: '{{ .pvc | default .app }}'
+      nfspath: '{{ .nfspath | default "/volume1/kopia" }}'
+      trigger: 'seed-{{ now | date "20060102-150405" }}'
+      nas:
+        sh: kubectl -n flux-system get secret cluster-secrets -o jsonpath='{.data.SECRET_NAS_URL}' | base64 -d
+      replicas:
+        sh: 'r=$(kubectl -n {{.namespace}} get deploy,sts -l app.kubernetes.io/name={{.app}} -o jsonpath="{.items[0].spec.replicas}" 2>/dev/null); echo ${r:-1}'
+      # Capture the HR's pre-run suspend state so restore returns it as-found
+      # (an app intentionally parked at suspend=true stays suspended).
+      hrsuspended:
+        sh: kubectl -n {{.namespace}} get hr {{.app}} -o jsonpath='{.spec.suspend}' 2>/dev/null
+    preconditions:
+      - sh: kubectl -n {{.namespace}} get pvc {{.pvc}}
+        msg: 'source PVC {{.pvc}} not found in namespace {{.namespace}}'
+      - sh: 'test -n "{{.nas}}"'
+        msg: 'could not resolve SECRET_NAS_URL from cluster-secrets'
+      - sh: '! kubectl -n {{.namespace}} get replicationsource {{.app}}'
+        msg: 'a ReplicationSource named {{.app}} already exists in {{.namespace}} — refusing to clobber it (has this app already been migrated?)'
+    cmds:
+      # Registered first → runs LAST: bring the app back regardless of outcome.
+      # Resuming the HR also lets Flux reconcile replicas back to spec.
+      - defer: |
+          echo ""
+          echo "== Restoring {{.app}} to pre-seed state ({{.replicas}} replica(s), hr suspend was '{{.hrsuspended}}') =="
+          if [ "{{.hrsuspended}}" = "true" ]; then
+            echo "HR was already suspended before the seed — leaving it suspended and at {{.replicas}} replica(s)."
+            kubectl -n {{.namespace}} scale deploy,sts -l app.kubernetes.io/name={{.app}} --replicas={{.replicas}} || true
+          else
+            flux -n {{.namespace}} resume hr {{.app}} || true
+            kubectl -n {{.namespace}} scale deploy,sts -l app.kubernetes.io/name={{.app}} --replicas={{.replicas}} || true
+          fi
+      # Cleanup runs on exit whether the seed succeeds OR fails: delete the
+      # transient source, its externalsecret, and any leaked src cache/temp/snap
+      # objects. The Kopia snapshot itself lives on NFS and is intentionally kept.
+      - defer: |
+          echo ""
+          echo "== Tearing down transient seed objects (Kopia snapshot on NFS is kept) =="
+          kubectl -n {{.namespace}} delete replicationsource {{.app}} --ignore-not-found
+          kubectl -n {{.namespace}} delete externalsecret {{.app}}-volsync --ignore-not-found
+          for pvc in $(kubectl -n {{.namespace}} get pvc --no-headers -o custom-columns=:.metadata.name 2>/dev/null | grep '^volsync-{{.app}}-src' || true); do
+            kubectl -n {{.namespace}} delete pvc "$pvc" --ignore-not-found
+          done
+          for vs in $(kubectl -n {{.namespace}} get volumesnapshot --no-headers -o custom-columns=:.metadata.name 2>/dev/null | grep '^volsync-{{.app}}-src' || true); do
+            kubectl -n {{.namespace}} delete volumesnapshot "$vs" --ignore-not-found
+          done
+      - cmd: |
+          echo "== Quiescing {{.app}} for a consistent snapshot (was {{.replicas}} replica(s)) =="
+          flux -n {{.namespace}} suspend hr {{.app}}
+          kubectl -n {{.namespace}} scale deploy,sts -l app.kubernetes.io/name={{.app}} --replicas=0
+          kubectl -n {{.namespace}} wait pod -l app.kubernetes.io/name={{.app}} --for=delete --timeout=2m || true
+      - cmd: |
+          echo "== Applying transient ExternalSecret {{.app}}-volsync (repo credentials) =="
+          kubectl -n {{.namespace}} apply -f - <<'EOF'
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: {{.app}}-volsync
+          spec:
+            secretStoreRef:
+              kind: ClusterSecretStore
+              name: bitwarden-secrets-manager-sdk
+            target:
+              name: {{.app}}-volsync-secret
+              template:
+                data:
+                  KOPIA_PASSWORD: "{{`{{ .KOPIA_PASSWORD }}`}}"
+                  KOPIA_REPOSITORY: filesystem:///mnt/repository
+            refreshInterval: 15m
+            dataFrom:
+              - extract:
+                  key: volsync
+          EOF
+      - cmd: |
+          echo "Waiting for {{.app}}-volsync-secret to sync from Bitwarden (timeout 2m)..."
+          kubectl -n {{.namespace}} wait externalsecret/{{.app}}-volsync \
+            --for=condition=Ready --timeout=2m
+      - cmd: |
+          echo "== Applying transient ReplicationSource {{.app}} (sourcePVC={{.pvc}}) =="
+          echo "NFS backend: {{.nas}}:{{.nfspath}}"
+          kubectl -n {{.namespace}} apply -f - <<'EOF'
+          apiVersion: volsync.backube/v1alpha1
+          kind: ReplicationSource
+          metadata:
+            name: {{.app}}
+          spec:
+            sourcePVC: {{.pvc}}
+            trigger:
+              manual: {{.trigger}}
+            kopia:
+              accessModes: [ReadWriteOnce]
+              cacheAccessModes: [ReadWriteOnce]
+              cacheCapacity: 5Gi
+              cacheStorageClassName: local-path
+              compression: zstd-fastest
+              copyMethod: Snapshot
+              # The shared NFS Kopia repo is owned UID/GID 1000; the mover MUST run
+              # as 1000 to write it. fsGroup re-groups the cloned source volume so a
+              # 1000 mover can still read data owned by a different app UID (e.g. shlink=2000).
+              moverSecurityContext:
+                runAsUser: 1000
+                runAsGroup: 1000
+                fsGroup: 1000
+              moverVolumes:
+                - mountPath: repository
+                  volumeSource:
+                    nfs:
+                      server: {{.nas}}
+                      path: {{.nfspath}}
+              parallelism: 2
+              repository: {{.app}}-volsync-secret
+              retain:
+                hourly: 24
+                daily: 7
+              storageClassName: longhorn
+              volumeSnapshotClassName: longhorn-snapclass
+          EOF
+      - cmd: |
+          echo "Waiting for the seed backup mover to complete (timeout 30m)..."
+          kubectl -n {{.namespace}} wait replicationsource/{{.app}} \
+            --for=jsonpath='{.status.lastManualSync}'={{.trigger}} --timeout=30m
+      - cmd: |
+          echo ""
+          echo "== Seed complete =="
+          echo "Last sync time:"
+          kubectl -n {{.namespace}} get replicationsource {{.app}} -o jsonpath='{.status.lastSyncTime}{"\n"}'
+          echo ""
+          echo "Kopia now holds a snapshot under source identity {{.app}}@{{.namespace}}.svc.cluster.local"
+          echo "VERIFY it in the Kopia UI before proceeding. Then do the git swap:"
+          echo "  - delete apps/.../{{.app}}/app/pvc.yaml + drop it from app/kustomization.yaml"
+          echo "  - add ../../../../components/volsync to ks.yaml components (path depth may vary)"
+          echo "  - set substitute: APP={{.app}}  (leave VOLSYNC_PUID/PGID at 1000 — the shared NFS repo requires it)"
+          echo "  - if the app pod runs as a non-1000 UID, set fsGroup=<that UID> on the pod so it can"
+          echo "    read the restored data (e.g. shlink runs as 2000 -> uncomment fsGroup: 2000 in its helmrelease)"
+          echo "  - kubectl -n {{.namespace}} delete pvc {{.pvc}}   # then Flux repopulates from the seed"
+
+  cleanup:
+    desc: Delete volume populator PVCs in all namespaces
+    cmds:
+      - for: {var: dest}
+        cmd: |
+          {{- $items := (split "/" .ITEM) }}
+          kubectl delete pvc -n {{ $items._0 }} {{ $items._1 }}
+      - for: {var: cache}
+        cmd: |
+          {{- $items := (split "/" .ITEM) }}
+          kubectl delete pvc -n {{ $items._0 }} {{ $items._1 }}
+      - for: {var: snaps}
+        cmd: |
+          {{- $items := (split "/" .ITEM) }}
+          kubectl delete volumesnapshot -n {{ $items._0 }} {{ $items._1 }}
+    vars:
+      dest:
+        sh: kubectl get pvc --all-namespaces --no-headers | grep "dst-dest" | awk '{print $1 "/" $2}'
+      cache:
+        sh: kubectl get pvc --all-namespaces --no-headers | grep "dst-cache" | awk '{print $1 "/" $2}'
+      snaps:
+        sh: kubectl get volumesnapshot --all-namespaces --no-headers | grep "dst-dest" | awk '{print $1 "/" $2}'

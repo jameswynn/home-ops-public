@@ -1,0 +1,21 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/v1/service.json
+# Fixed-IP LoadBalancer fronting Alloy's syslog listener. External devices push
+# to ${SVC_SYSLOG_ADDR}:1514 — this IP must be preserved from the promtail setup.
+apiVersion: v1
+kind: Service
+metadata:
+  name: alloy-syslog
+  namespace: monitoring
+spec:
+  type: LoadBalancer
+  loadBalancerIP: ${SVC_SYSLOG_ADDR}
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: alloy
+  ports:
+    - name: tcp-syslog
+      port: 1514
+      targetPort: 1514
+      protocol: TCP

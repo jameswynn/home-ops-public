@@ -1,0 +1,34 @@
+---
+version: "3"
+
+vars:
+  PROJECT_DIR:
+    sh: "git rev-parse --show-toplevel"
+  CLUSTER_DIR: "{{.PROJECT_DIR}}"
+  ANSIBLE_DIR: "{{.PROJECT_DIR}}/ansible"
+
+dotenv:
+  - ".config.env"
+
+env:
+  KUBECONFIG: "{{.PROJECT_DIR}}/kubeconfig"
+
+includes:
+  ansible: .taskfiles/Ansible.yaml
+  cluster: .taskfiles/Cluster.yaml
+  precommit: .taskfiles/PreCommit.yaml
+  sops: .taskfiles/Sops.yaml
+  volsync: .taskfiles/VolSync.yaml
+
+tasks:
+
+  kubeconfig:
+    desc: Remotely fetch kubeconfig from Kubernetes
+    cmds:
+      - rsync --verbose --progress --partial --rsync-path="sudo rsync" {{.K3S_PRIMARY_MASTER_NODE_USERNAME}}@{{.K3S_PRIMARY_MASTER_NODE_ADDR}}:/etc/rancher/k3s/k3s.yaml "{{.CLUSTER_DIR}}/kubeconfig"
+      - sed -i 's/127.0.0.1/{{.K3S_LB_ADDR}}/g' "{{.CLUSTER_DIR}}/kubeconfig"
+      - chmod go-r "{{.CLUSTER_DIR}}/kubeconfig"
+    vars:
+      K3S_PRIMARY_MASTER_NODE_USERNAME: "ubuntu"
+      K3S_PRIMARY_MASTER_NODE_ADDR: "muspelheim.core.wynning.tech"
+      K3S_LB_ADDR: "k8s.core.wynning.tech"

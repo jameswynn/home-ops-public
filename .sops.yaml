@@ -1,0 +1,23 @@
+---
+creation_rules:
+  - path_regex: ansible/.*\.sops\.ya?ml
+    unencrypted_regex: "^(kind)$"
+    age: >-
+      age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem
+
+  # Non-Secret YAML (plain top-level keys, e.g. TF_VAR_*/BWS_* for mise `_.file`).
+  # Must stay ABOVE the catch-all below: that rule's encrypted_regex is scoped to
+  # `data`/`stringData`, so it would append sops metadata and leave these values
+  # in PLAINTEXT. No encrypted_regex here means every value is encrypted.
+  - path_regex: tofu/.*\.sops\.ya?ml$
+    age: >-
+      age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem
+
+  - path_regex: .*\.sops\.env$
+    age: >-
+      age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem
+
+  - path_regex: .*\.ya?ml
+    encrypted_regex: "^(data|stringData)$"
+    age: >-
+      age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem

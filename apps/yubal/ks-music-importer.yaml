@@ -1,0 +1,37 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app music-importer
+  namespace: &namespace yubal
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  # yubal must be repointed at music-incoming before the importer starts moving
+  # things out of it.
+  dependsOn:
+    - name: yubal
+  # A second Kustomization is what gives this app its own volsync PVC — the
+  # component names every resource after ${APP}, so sharing yubal's would collide.
+  components:
+    - ../../../components/volsync
+    - ../../../components/nfs-scaler
+  postBuild:
+    substitute:
+      APP: *app
+      # beets library.db + the importer's ledger. Small, but it is the record of
+      # everything ever imported, so it is worth backing up.
+      VOLSYNC_CAPACITY: 2Gi
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  path: ./apps/yubal/music-importer
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
