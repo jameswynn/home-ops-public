@@ -1,0 +1,117 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: tempo
+spec:
+  interval: 5m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 1.24.4
+  url: oci://ghcr.io/grafana/helm-charts/tempo
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tempo
+  namespace: monitoring
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: tempo
+  values:
+    tempo:
+      # Trace block retention in Garage S3 (chart default is 24h).
+      retention: 168h
+      storage:
+        trace:
+          backend: s3
+          s3:
+            bucket: tempo
+            endpoint: ${SECRET_GARAGE_URL}
+            region: garage
+            forcepathstyle: true
+      metricsGenerator:
+        enabled: true
+        remoteWriteUrl: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090/api/v1/write
+        processor:
+          service_graphs:
+            histogram_buckets:
+              - 0.1
+              - 0.2
+              - 0.4
+              - 0.8
+              - 1.6
+              - 3.2
+              - 6.4
+              - 12.8
+          span_metrics: {}
+          # Required for TraceQL metrics queries (Grafana Traces Drilldown).
+          local_blocks:
+            flush_to_storage: true
+            filter_server_spans: false
+      # The monolithic tempo chart renders `tempo.overrides` into the config's
+      # overrides block, activating the generator processors per-tenant.
+      overrides:
+        defaults:
+          metrics_generator:
+            processors:
+              - service-graphs
+              - span-metrics
+              - local-blocks
+      # Feed the Garage S3 credentials to tempo's minio-go client via the AWS
+      # credential chain, so the secret never lands in the config ConfigMap.
+      extraEnv:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: tempo-garage
+              key: GARAGE_ACCESS_KEY
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: tempo-garage
+              key: GARAGE_SECRET_KEY
+      resources:
+        requests:
+          cpu: 50m
+          memory: 256Mi
+        limits:
+          memory: 1Gi
+
+    # Local WAL + block cache; S3 is the source of truth for flushed traces.
+    persistence:
+      enabled: true
+      storageClassName: local-path
+      size: 10Gi
+
+    # muspelheim's etcd WAL sits on a DRAM-less Crucial BX500 sharing one LVM VG
+    # with the Longhorn replica store. Tempo's own WAL is a continuous
+    # small-write stream and local_blocks (enabled above for TraceQL metrics)
+    # adds a flush cycle on top — two writers contending with etcd on the worst
+    # disk in the cluster.
+    #
+    # Soft, not required: `persistence.storageClassName` is local-path, so
+    # storage-tempo-0 is a PV pinned to muspelheim by its own node affinity, and
+    # a required rule would leave tempo-0 permanently Pending. Soft is a no-op
+    # while that PVC exists — S3 holds every flushed trace, so deleting the PVC
+    # to force the move costs only the unflushed WAL, but that is a deliberate
+    # manual step, not something this rule does on its own.
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: NotIn
+                  values:
+                    - muspelheim
+
+    serviceMonitor:
+      enabled: true

@@ -1,0 +1,35 @@
+---
+# For configuration options and examples, please see:
+# https://github.com/benphelps/homepage/wiki/Services
+
+- Home Automation: []
+
+- Office: []
+
+- AI: []
+
+- Applications: []
+
+- Development: []
+
+- Security: []
+
+- Storage:
+    - Synology:
+        icon: synology.png
+        href: https://${SECRET_NAS_URL}
+        description: SMB, NFS, etc.
+    - Minio (NAS):
+        icon: minio.png
+        href: https://${SECRET_MINIO_URL}
+        description: S3 Block Storage
+    - Garage (NAS):
+        icon: garage.png
+        href: https://garage.${SECRET_CORE_DOMAIN}
+        description: S3 Block Storage
+
+- Operations:
+    - CUPS (midgard):
+        icon: cups.png
+        href: http://10.10.2.2:631
+        description: CUPS Printer Management

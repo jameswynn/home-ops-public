@@ -1,0 +1,56 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/prometheusrule_v1.json
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: node-maintenance-gate
+  namespace: kube-system
+spec:
+  groups:
+    # Deliberately one rule. The maintenance window is already watched by the
+    # node-maintenance rules that ship with kured (#1713) —
+    # NodeMaintenanceDrainStalled, LonghornMaintenanceRecoveryStalled,
+    # NodeMaintenanceRebootOverlappedRecovery, LonghornNodeUnhealthyWhileNodeReady
+    # and KuredRebootPendingTooLong. Those cover what the gate is protecting
+    # against and, once the gate is holding the window shut for too long,
+    # KuredRebootPendingTooLong is what says so. Nothing here restates them.
+    #
+    # What none of them can see is the gate's own blind spot, and it is the one
+    # failure mode that turns the gate off without turning anything red: kured's
+    # blocking-pod check is scoped to `spec.nodeName=<its own node>`, so it asks
+    # "is there a blocked gate pod on *this* node". A node with no gate pod at
+    # all therefore has no gate — the query matches nothing and the node reboots
+    # unguarded. That is a silent fail-open in a component whose entire purpose
+    # is to fail closed, so it gets the alert.
+    - name: node-maintenance-gate.rules
+      rules:
+        - alert: NodeMaintenanceGateIncomplete
+          annotations:
+            summary: >-
+              The Longhorn maintenance gate is missing on {{ $value }} node(s).
+            description: >-
+              kured only asks whether a blocked gate pod exists on the node it is
+              about to reboot, so a node without a gate pod is not gated at all —
+              it will drain and reboot without waiting for the previous node's
+              Longhorn replicas to finish rebuilding, which is the failure #1508
+              exists to prevent. The usual causes are the arm64 image failing to
+              pull on niflheim, the arm=true:NoSchedule toleration being dropped,
+              or the pod being preempted despite system-node-critical. Check with
+              `kubectl -n kube-system get ds node-maintenance-gate` and then
+              `kubectl -n kube-system get pods -l
+              app.kubernetes.io/name=node-maintenance-gate -o wide` to see which
+              node is missing one. Until it is fixed, treat the maintenance window
+              as ungated.
+            runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/node-maintenance-gate.md
+          # 15m rather than instant: a rolling update of the DaemonSet itself
+          # legitimately takes one pod down at a time, and the gate is only
+          # consulted inside the 02:00-05:00 window.
+          expr: |
+            (
+              max by (daemonset, namespace) (kube_daemonset_status_desired_number_scheduled{daemonset="node-maintenance-gate", namespace="kube-system"})
+              -
+              max by (daemonset, namespace) (kube_daemonset_status_number_ready{daemonset="node-maintenance-gate", namespace="kube-system"})
+            ) > 0
+          for: 15m
+          labels:
+            severity: warning

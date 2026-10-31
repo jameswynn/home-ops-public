@@ -1,0 +1,40 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/volsync.backube/replicationdestination_v1alpha1.json
+apiVersion: volsync.backube/v1alpha1
+kind: ReplicationDestination
+metadata:
+  name: "${APP}-dst"
+  labels:
+    # Flux applies this once on initial restore; subsequent reconciles leave it
+    # alone so the populator doesn't re-fire and overwrite live data.
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
+spec:
+  trigger:
+    manual: restore-once
+  kopia:
+    accessModes:
+      - ${VOLSYNC_ACCESSMODES:=ReadWriteOnce}
+    cacheAccessModes:
+      - ${VOLSYNC_CACHE_ACCESSMODES:=ReadWriteOnce}
+    cacheCapacity: ${VOLSYNC_CACHE_CAPACITY:=5Gi}
+    cacheStorageClassName: ${VOLSYNC_CACHE_STORAGECLASS:=local-path}
+    capacity: ${VOLSYNC_CAPACITY:=5Gi}
+    cleanupCachePVC: false
+    cleanupTempPVC: false
+    copyMethod: Snapshot
+    enableFileDeletion: true
+    moverSecurityContext:
+      runAsUser: ${VOLSYNC_PUID:=1000}
+      runAsGroup: ${VOLSYNC_PGID:=1000}
+      fsGroup: ${VOLSYNC_PGID:=1000}
+    moverVolumes:
+      - mountPath: repository
+        volumeSource:
+          nfs:
+            server: ${SECRET_NAS_URL}
+            path: ${VOLSYNC_NFS_PATH:=/volume1/kopia}
+    repository: ${APP}-volsync-secret
+    sourceIdentity:
+      sourceName: ${APP}
+    storageClassName: ${VOLSYNC_STORAGECLASS:=longhorn}
+    volumeSnapshotClassName: ${VOLSYNC_SNAPSHOTCLASS:=longhorn-snapclass}

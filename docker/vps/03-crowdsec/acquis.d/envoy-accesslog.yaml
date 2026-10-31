@@ -1,0 +1,44 @@
+---
+# Envoy Gateway access logs, tailed live from the cluster's Loki over the tailnet.
+#
+# Why Loki and not a local log: the Caddy edge (01-edge) is an L4 SNI passthrough for
+# every tunnelled host, so it never terminates TLS and CrowdSec has *no* HTTP visibility
+# at the VPS. The only place these requests are parsed is Envoy, in the cluster. Loki
+# already has them, so tailing it avoids standing up a second log pipeline.
+#
+# The line filter is a raw substring match rather than `| json ... | code="429"`: it costs
+# Loki nothing, and JSON label extraction on a stream this wide risks the series cap.
+# `response_code` is an unquoted number in the access log, so the match is exact.
+#
+# Reachability: `loki` is the tailscale-operator proxy in front of loki-gateway (see
+# core/monitoring/loki/app/helm-release.yaml). It is tailnet-only — not on the LAN.
+# Deliberately the bare MagicDNS short name: the tailnet's DNS suffix is supplied as the
+# container's search domain from a doco-cd secret, so it is never committed to this repo.
+source: loki
+url: http://loki
+query: '{job="networking/envoy"} |= `"response_code":429`'
+headers:
+  # Loki runs single-tenant with auth_enabled=false; it still requires the org header.
+  X-Scope-OrgID: fake
+# Skip the /ready probe. loki-gateway is an nginx that proxies only the Loki API paths and
+# deliberately does not expose /ready — that is a per-component endpoint on read/write/
+# backend, so the probe 404s ("open() /etc/nginx/html/ready failed" in the gateway log).
+# This is not a soft failure: the engine retries until wait_for_ready expires and then
+# exits with `fatal: starting acquisition error: loki is not ready`, taking the whole
+# process down — including the sshd datasource and the Prometheus listener — in a restart
+# loop. The tail endpoint itself works fine; only the readiness probe is missing.
+no_ready_check: true
+# Ride out Loki being briefly unreachable instead of taking the engine down with it.
+# The datasource gives up after `max_failure_duration` (default 30s) and the give-up is
+# fatal — it kills PID 1, so a Loki hiccup also takes out the sshd datasource, the LAPI
+# and the Prometheus listener, and the in-memory leaky buckets reset. That is how a
+# loki-gateway pod being evicted every ~5min turned into 890 container restarts.
+# 15m covers a gateway rollout, a Loki HelmRelease upgrade or a node reboot. On recovery
+# the client logs "loki is back after <duration>" and resumes; there is no unlimited
+# setting, so a genuinely permanent outage still ends in a restart, by design.
+max_failure_duration: 15m
+# No `since:` — the datasource zeroes it in tail mode (cfg.go: "Resetting since"), so a
+# live tail always starts from now. That is what we want anyway: replaying a backlog of
+# stale 429s would ban IPs that rotated away hours ago.
+labels:
+  type: envoy-accesslog

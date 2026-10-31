@@ -1,0 +1,92 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.envoyproxy.io/envoyproxy_v1alpha1.json
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: envoy
+spec:
+  logging:
+    level:
+      default: info
+      # coraza-proxy-wasm emits per-request "Started/Finished tx_id" lines at
+      # info; the WAF's real output is the JSON audit log on stdout, so quiet
+      # the wasm runtime logger to warn.
+      wasm: warn
+  provider:
+    type: Kubernetes
+    kubernetes:
+      # DaemonSet, not a Deployment: the LB service is externalTrafficPolicy=Local
+      # (EG default; keeps the real client IP), but Cilium L2 announcements pick
+      # the ARP lease holder for the LB IP from *any* node in the L2 policy without
+      # regard to where endpoints run. With 2 replicas the lease regularly landed
+      # on a node with no envoy pod, and same-L2 clients (e.g. the NAS) got
+      # connection refused. One pod per node means every possible lease holder has
+      # a local endpoint. Routed clients were unaffected (BGP only advertises from
+      # nodes with endpoints). Long-term fix is moving the LB pool off the L2
+      # subnet — forge issue #2064.
+      envoyDaemonSet:
+        pod:
+          # Every node must run one (any node can win the L2 lease), so preempt
+          # rather than sit Pending on a full node. Same class as other per-node
+          # DaemonSets (node-maintenance-gate).
+          priorityClassName: system-node-critical
+          # niflheim (arm64 Pi) is in the L2 announcement policy too, so it can
+          # win the lease and needs a pod. Envoy and the coraza wasm are multi-arch.
+          tolerations:
+            - key: arm
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+        container:
+          imageRepository: mirror.gcr.io/envoyproxy/envoy
+          resources:
+            requests:
+              cpu: 100m
+            limits:
+              memory: 2Gi
+              ephemeral-storage: 200Mi
+  shutdown:
+    drainTimeout: 180s
+  telemetry:
+    metrics:
+      prometheus:
+        compression:
+          type: Zstd
+    # Envoy Gateway's built-in JSON access log carries no request path and no
+    # port-stripped client IP, which makes any L7 analysis or IPS detection
+    # impossible (you cannot tell *what* is being scraped, only how much). This
+    # restates EG's default field set verbatim and adds `path` + `client_ip`, so
+    # it is a strict superset — existing Loki queries and dashboards keep working.
+    # NOTE: `envoy-towonel` has its own EnvoyProxy and does NOT inherit this.
+    # Keep the two formats identical; gateway-towonel.yaml carries the same block.
+    accessLog:
+      settings:
+        - format:
+            type: JSON
+            json:
+              start_time: "%START_TIME%"
+              method: "%REQ(:METHOD)%"
+              path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+              client_ip: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
+              protocol: "%PROTOCOL%"
+              response_code: "%RESPONSE_CODE%"
+              response_flags: "%RESPONSE_FLAGS%"
+              response_code_details: "%RESPONSE_CODE_DETAILS%"
+              connection_termination_details: "%CONNECTION_TERMINATION_DETAILS%"
+              upstream_transport_failure_reason: "%UPSTREAM_TRANSPORT_FAILURE_REASON%"
+              bytes_received: "%BYTES_RECEIVED%"
+              bytes_sent: "%BYTES_SENT%"
+              duration: "%DURATION%"
+              upstream_cluster: "%UPSTREAM_CLUSTER%"
+              upstream_host: "%UPSTREAM_HOST%"
+              upstream_local_address: "%UPSTREAM_LOCAL_ADDRESS%"
+              downstream_local_address: "%DOWNSTREAM_LOCAL_ADDRESS%"
+              downstream_remote_address: "%DOWNSTREAM_REMOTE_ADDRESS%"
+              requested_server_name: "%REQUESTED_SERVER_NAME%"
+              route_name: "%ROUTE_NAME%"
+              user-agent: "%REQ(USER-AGENT)%"
+              ":authority": "%REQ(:AUTHORITY)%"
+          sinks:
+            - type: File
+              file:
+                path: /dev/stdout

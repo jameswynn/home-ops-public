@@ -1,0 +1,15 @@
+---
+# Persistent cache and export location for the Actual MCP bridge.
+# The underlying budget remains in Actual's own server storage; this volume
+# holds the bridge's local sync/cache and application-level budget exports.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: actualbudget-mcp-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: longhorn

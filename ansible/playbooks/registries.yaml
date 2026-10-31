@@ -1,0 +1,54 @@
+---
+# Manage /etc/rancher/k3s/registries.yaml: Spegel for everything ("*"), with the
+# zot pull-through cache as the next endpoint for the registries it proxies.
+# k3s only reads registries.yaml at startup, so changed nodes are restarted one at a time.
+- hosts:
+    - master
+    - worker
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Registries | Render /etc/rancher/k3s/registries.yaml
+      ansible.builtin.copy:
+        dest: /etc/rancher/k3s/registries.yaml
+        owner: root
+        group: root
+        mode: "0600"
+        backup: true
+        content: |
+          # Managed by ansible (playbooks/registries.yaml) - do not edit on the node.
+          mirrors:
+            "*":
+          {% for upstream in k3s_registry_zot_upstreams %}
+            {{ upstream }}:
+              endpoint:
+                - {{ k3s_registry_zot_endpoint }}
+              rewrite:
+                "^(.*)$": "{{ upstream }}/$1"
+          {% endfor %}
+          configs:
+          {% for registry, auth in k3s_registry_auth.items() %}
+            {{ registry }}:
+              auth:
+                username: {{ auth.username | to_json }}
+                password: {{ auth.password | to_json }}
+          {% endfor %}
+      notify: Restart k3s
+
+  handlers:
+    - name: Restart k3s
+      ansible.builtin.systemd:
+        name: "{{ 'k3s' if inventory_hostname in groups['master'] else 'k3s-agent' }}"
+        state: restarted
+
+    - name: Wait for node Ready
+      ansible.builtin.command: >-
+        kubectl wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=300s
+      delegate_to: localhost
+      become: false
+      environment:
+        KUBECONFIG: "{{ playbook_dir }}/../../kubeconfig"
+      changed_when: false
+      listen: Restart k3s

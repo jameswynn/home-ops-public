@@ -1,0 +1,142 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: saam
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  interval: 1h
+  values:
+    controllers:
+      saam:
+        replicas: 1
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: forge.wynning.tech/james/saam # {"$imagepolicy": "saam:saam:name"}
+              tag: v0.11.1-rc.2 # {"$imagepolicy": "saam:saam:tag"}
+            env:
+              SAAM_HOST: "0.0.0.0"
+              SAAM_ALLOW_NON_LOOPBACK: "true"
+              SAAM_DATA_DIR: /data
+              SAAM_AUTH_MODE: oidc
+              SAAM_AUTH_FILE: /etc/saam-auth.toml
+              SAAM_PUBLIC_URL: "https://saam.${SECRET_ROOT_DOMAIN}"
+              SAAM_AUTHENTIK_CLIENT_SECRET:
+                valueFrom:
+                  secretKeyRef:
+                    name: saam-oidc
+                    key: SAAM_AUTHENTIK_CLIENT_SECRET
+              SAAM_GOOGLE_CLIENT_SECRET:
+                valueFrom:
+                  secretKeyRef:
+                    name: saam-oidc
+                    key: SAAM_GOOGLE_CLIENT_SECRET
+              SAAM_ALLOWED_HOSTS: '["saam", "saam.saam", "saam.saam.svc", "saam.saam.svc.cluster.local", "saam.${SECRET_ROOT_DOMAIN}", "localhost", "127.0.0.1", "[::1]"]'
+            ports:
+              - name: http
+                containerPort: 8000
+                protocol: TCP
+            probes:
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/health/ready
+                    port: http
+                    httpHeaders:
+                      - name: Host
+                        value: saam.saam.svc.cluster.local
+                  periodSeconds: 10
+                  failureThreshold: 30
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/health/ready
+                    port: http
+                    httpHeaders:
+                      - name: Host
+                        value: saam.saam.svc.cluster.local
+                  periodSeconds: 10
+                  failureThreshold: 3
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/health
+                    port: http
+                    httpHeaders:
+                      - name: Host
+                        value: saam.saam.svc.cluster.local
+                  periodSeconds: 20
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: "1"
+                memory: 512Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 10001
+              runAsGroup: 10001
+              capabilities:
+                drop:
+                  - ALL
+        pod:
+          automountServiceAccountToken: false
+          securityContext:
+            fsGroup: 10001
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+    service:
+      app:
+        controller: saam
+        ports:
+          http:
+            port: 8000
+            targetPort: http
+    route:
+      app:
+        annotations:
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "SAAM"
+          gethomepage.dev/description: "Army List Manager"
+          gethomepage.dev/group: "Applications"
+          gethomepage.dev/weight: "50"
+          external-dns.alpha.kubernetes.io/hostname: "saam.${SECRET_ROOT_DOMAIN}"
+        parentRefs:
+          - name: envoy-towonel
+            namespace: networking
+          - name: envoy-internal
+            namespace: networking
+        hostnames:
+          - "saam.${SECRET_ROOT_DOMAIN}"
+    persistence:
+      data:
+        enabled: true
+        existingClaim: saam
+        globalMounts:
+          - path: /data
+      oidc:
+        type: secret
+        name: saam-oidc
+        globalMounts:
+          - subPath: auth.toml
+            path: /etc/saam-auth.toml
+            readOnly: true
+      tmp:
+        type: emptyDir
+        globalMounts:
+          - path: /tmp

@@ -1,0 +1,78 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Publish
+
+on:
+  # push:
+  #   branches: [ main ]
+  schedule:
+    - cron: '0 0 * * *' # Every day at midnight UTC
+  workflow_dispatch: {}
+
+jobs:
+  publish_repo:
+    name: Publish Repo
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/catthehacker/ubuntu:js-24.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Prepare and Push to Destination
+        env:
+          DEST_REPO: "forge.wynning.tech/james/home-ops-public"
+          API_TOKEN: ${{ secrets.DEST_REPO_TOKEN }}
+        run: |
+          # Remove the existing .git folder to "destroy history"
+          rm -rf .git
+
+          # Initialize a new, clean repository
+          git init
+          git config user.name "James Wynn"
+          git config user.email "${FORGEJO_ACTOR}@forge.wynning.tech"
+
+          # Add all files and create a single "Initial Commit"
+          git add .
+          git commit -m "Mirroring repository with clean history"
+
+          # Force push to the destination repo
+          # This replaces EVERYTHING in the destination with this single commit
+          git remote add destination "https://${API_TOKEN}@${DEST_REPO}"
+          git push --force destination master:public
+
+      - name: Notify Failure
+        uses: https://forge.wynning.tech/actions/ntfy-action@v1.0.6
+        if: failure()
+        with:
+          url: 'https://ntfy.wynning.tech'
+          topic: ${{ secrets.NTFY_TOPIC }}
+          tags: warning
+          title: home-ops publish failed
+          priority: low
+          actions: |-
+            [{
+              "action": "view",
+              "label": "Build Log",
+              "url": "https://forge.wynning.tech/${{ forgejo.repository }}/actions/${{ forgejo.run_id }}",
+              "clear": true
+            }]
+
+      - name: Notify Success
+        uses: https://forge.wynning.tech/actions/ntfy-action@v1.0.6
+        if: success()
+        with:
+          url: 'https://ntfy.wynning.tech'
+          topic: ${{ secrets.NTFY_TOPIC }}
+          tags: partying_face
+          title: home-ops publish succeeded
+          priority: low
+          actions: |-
+            [{
+              "action": "view",
+              "label": "Build Log",
+              "url": "https://forge.wynning.tech/${{ forgejo.repository }}/actions/${{ forgejo.run_id }}",
+              "clear": true
+            }]

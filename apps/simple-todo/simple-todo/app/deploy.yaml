@@ -1,0 +1,55 @@
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: simple-todo
+  namespace: simple-todo
+spec:
+  image: forge.wynning.tech/james/simple-todo
+  interval: 1m
+  secretRef:
+    name: forge-wynning-tech-creds
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: simple-todo
+  namespace: simple-todo
+spec:
+  imageRepositoryRef:
+    name: simple-todo
+  policy:
+    semver:
+      range: ">=0.0.1"   # or use 'alphabetical: {order: asc}' for date-stamped tags
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: simple-todo
+  namespace: simple-todo
+spec:
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: Flux Bot
+        email: flux@example.com
+      messageTemplate: |
+        simple-todo: automated image update
+
+        Automation: {{ .AutomationObject.Namespace }}/{{ .AutomationObject.Name }}
+        {{- range .Changed.Changes }}
+        - {{ .OldValue }} -> {{ .NewValue }}
+        {{- end }}
+
+    push:
+      branch: main
+  update:
+    strategy: Setters
+    path: ./apps/simple-todo/simple-todo/app
