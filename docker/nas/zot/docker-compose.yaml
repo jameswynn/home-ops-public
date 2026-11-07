@@ -1,0 +1,76 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# zot OCI registry: private registry for our own images plus an on-demand pull-through
+# cache for the public registries below (see config.json `extensions.sync`).
+#
+# Pull through the cache with the upstream host as the first path segment:
+#   docker pull nas:5050/docker.io/library/nginx:latest
+#   docker pull nas:5050/ghcr.io/kimdre/doco-cd:0.121.0
+# Anonymous pulls are allowed; pushes need the htpasswd user (Bitwarden ZOT_HTPASSWD).
+#
+# Port 5050, not zot's usual 5000: DSM owns 5000/5001 on the NAS.
+# Plain HTTP: clients need "insecure-registries" until a TLS proxy is added in front.
+#
+# Volumes must exist on the NAS first: mkdir -p /volume1/docker/zot/data
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  # zot only reads htpasswd and upstream sync credentials from files, and its image is
+  # distroless (no shell), so a one-shot busybox writes the Bitwarden-sourced values into
+  # a shared volume first, owned by zot's uid and readable only by it.
+  auth-init:
+    image: docker.io/library/busybox:1.38.0
+    restart: "no"
+    environment:
+      HTPASSWD: ${ZOT_HTPASSWD}
+      DOCKERHUB_USERNAME: ${ZOT_DOCKERHUB_USERNAME}
+      DOCKERHUB_TOKEN: ${ZOT_DOCKERHUB_TOKEN}
+      GITHUB_USERNAME: ${ZOT_GITHUB_USERNAME}
+      GITHUB_TOKEN: ${ZOT_GITHUB_TOKEN}
+    # $$ escapes compose interpolation; the shell expands the variables at runtime, so the
+    # bcrypt hash's own `$` characters are never interpreted. Keys of the credentials
+    # file must equal the host of each sync `urls` entry in config.json.
+    command:
+      - "sh"
+      - "-euc"
+      - |
+        : "$${HTPASSWD:?empty}" "$${DOCKERHUB_USERNAME:?empty}" "$${DOCKERHUB_TOKEN:?empty}"
+        : "$${GITHUB_USERNAME:?empty}" "$${GITHUB_TOKEN:?empty}"
+        umask 077
+        printf '%s\n' "$$HTPASSWD" > /auth/htpasswd
+        printf '{"registry-1.docker.io":{"username":"%s","password":"%s"},"ghcr.io":{"username":"%s","password":"%s"}}\n' \
+          "$$DOCKERHUB_USERNAME" "$$DOCKERHUB_TOKEN" "$$GITHUB_USERNAME" "$$GITHUB_TOKEN" \
+          > /auth/sync-credentials.json
+        chown 1026:100 /auth/htpasswd /auth/sync-credentials.json
+    volumes:
+      - auth:/auth
+    logging: *default-logging
+
+  zot:
+    image: ghcr.io/project-zot/zot-linux-amd64:v2.1.23
+    restart: unless-stopped
+    depends_on:
+      auth-init:
+        condition: service_completed_successfully
+    user: "1026:100"
+    environment:
+      TZ: America/Chicago
+    ports:
+      - "5050:5000"
+    volumes:
+      - ./config.json:/etc/zot/config.json:ro
+      - auth:/etc/zot/auth:ro
+      - /volume1/docker/zot/data:/var/lib/registry
+    # No healthcheck: the image has no shell/curl. /livez and /readyz exist for
+    # external probes.
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging: *default-logging
+
+volumes:
+  auth:

@@ -1,0 +1,29 @@
+---
+# flux-system-scoped ConfigMap read for the flux-operator MCP server in ai
+# (apps/ai/toolhive/config/flux-operator-rbac.yaml owns the SA and the
+# ClusterRole). Lives here rather than next to the SA because the toolhive
+# Kustomization has targetNamespace: ai, which would drag a Role into ai.
+# Scoped to flux-system so the MCP can read the postBuild.substituteFrom
+# ConfigMaps when debugging a Kustomization, without cluster-wide ConfigMap
+# access (#2069).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: toolhive-flux-reader-configmaps
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: toolhive-flux-reader-configmaps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: toolhive-flux-reader-configmaps
+subjects:
+  - kind: ServiceAccount
+    name: toolhive-flux-reader
+    namespace: ai

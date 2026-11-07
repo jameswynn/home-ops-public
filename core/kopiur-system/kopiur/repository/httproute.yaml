@@ -1,0 +1,26 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.networking.k8s.io/httproute_v1.json
+# kopia web UI served by the `nas` ClusterRepository's `spec.server` (kopiur
+# creates only the Service `nas-kopia-ui`). Named `kopia` so the forward-auth
+# component (APP=kopia in ../ks.yaml) targets it.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kopia
+  annotations:
+    internal.wynning.tech/hostname: &host "kopia.${SECRET_INTERNAL_DOMAIN}"
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: "Kopia"
+    gethomepage.dev/description: "kopiur backup browser (read-only)"
+    gethomepage.dev/group: "Storage"
+    gethomepage.dev/icon: "kopia.png"
+spec:
+  hostnames:
+    - *host
+  parentRefs:
+    - name: envoy-internal
+      namespace: networking
+  rules:
+    - backendRefs:
+        - name: nas-kopia-ui
+          port: 51515

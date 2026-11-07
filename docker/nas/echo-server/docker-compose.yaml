@@ -1,0 +1,14 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# HTTP echo test service (port 8080).
+services:
+  app:
+    container_name: echo-server
+    image: ghcr.io/mendhak/http-https-echo:43
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_PORT: 8080
+      LOG_WITHOUT_NEWLINE: "true"
+      LOG_IGNORE_PATH: "/healthz"

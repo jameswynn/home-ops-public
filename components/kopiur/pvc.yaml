@@ -1,0 +1,23 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "${KOPIUR_CLAIM:=${APP}}"
+  labels:
+    # Create-only. dataSourceRef is immutable, and PVCs cut over from
+    # components/volsync still point at their ReplicationDestination: Flux must
+    # adopt them as-is, never patch (or force-recreate) a bound volume.
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
+spec:
+  accessModes:
+    - "${KOPIUR_ACCESSMODES:=ReadWriteOnce}"
+  # Deploy-or-restore: a new PVC is populated from the latest snapshot, or
+  # comes up empty when the repository has none.
+  dataSourceRef:
+    apiGroup: kopiur.home-operations.com
+    kind: Restore
+    name: "${APP}"
+  resources:
+    requests:
+      storage: "${KOPIUR_CAPACITY:=5Gi}"
+  storageClassName: "${KOPIUR_STORAGECLASS:=longhorn}"

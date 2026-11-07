@@ -1,0 +1,100 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: longhorn
+spec:
+  interval: 1h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 1.11.2
+  url: oci://ocharted.wynning.tech/charts.longhorn.io/longhorn
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: longhorn
+  namespace: longhorn-system
+spec:
+  interval: 30m
+  timeout: 20m
+
+  chartRef:
+    kind: OCIRepository
+    name: longhorn
+
+  install:
+    createNamespace: true
+    remediation:
+      retries: -1
+
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+
+  values:
+    global:
+      imageRegistry: mirror.gcr.io
+    image:
+      longhorn:
+        instanceManager:
+          # TODO: Remove this after 1.11.1 is released
+          tag: v1.11.0-hotfix-1
+    longhornManager:
+      # Sized from 7d p95 on the amd64 nodes (74-107m); niflheim (arm64) sits at
+      # ~564m for a comparable replica count and is tracked separately as an
+      # outlier. Request only - the DaemonSet stays burstable above this floor.
+      resources:
+        requests:
+          cpu: 150m
+      tolerations:
+        - key: "arm"
+          value: "true"
+          operator: "Equal"
+          effect: "NoSchedule"
+    longhornDriver:
+      tolerations:
+        - key: "arm"
+          value: "true"
+          operator: "Equal"
+          effect: "NoSchedule"
+    longhornUI:
+      tolerations:
+        - key: "arm"
+          value: "true"
+          operator: "Equal"
+          effect: "NoSchedule"
+
+    httproute:
+      annotations:
+        gethomepage.dev/enabled: "true"
+        gethomepage.dev/name: "Longhorn"
+        gethomepage.dev/description: "Cluster Storage Management"
+        gethomepage.dev/group: "Storage"
+        gethomepage.dev/icon: "longhorn.png"
+        gethomepage.dev/weight: "20"
+        gethomepage.dev/pod-selector: ""
+      enabled: true
+      parentRefs:
+        - name: envoy-internal
+          namespace: networking
+      hostnames:
+        - "longhorn.${SECRET_INTERNAL_DOMAIN}"
+      path: /
+      pathType: "PathPrefix"
+
+    defaultSettings:
+      backupTarget: s3://longhorn@eu-west-1/longhorn
+      backupTargetCredentialSecret: minio-secret
+      defaultDataPath: /storage
+      taintToleration: "arm=true:NoSchedule"
+      nodeDrainPolicy: block-for-eviction-if-contains-last-replica
+      nodeDownPodDeletionPolicy: delete-both-statefulset-and-deployment-pod
+      defaultDataLocality: best-effort
+      replicaAutoBalance: best-effort
+      removeSnapshotsDuringFilesystemTrim: true

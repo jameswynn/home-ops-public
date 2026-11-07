@@ -1,0 +1,274 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kritika
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: kritika
+  interval: 1h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    # One replica: single-user homelab. A leader change rescues orphaned jobs.
+    replicas: 1
+    deploymentAnnotations:
+      # Config changes roll the pods; Secret changes need Reloader.
+      secret.reloader.stakater.com/auto: "true"
+    envFrom:
+      - secretRef:
+          name: kritika-secret
+
+    database:
+      app:
+        existingSecret: kritika-db-app
+      owner:
+        existingSecret: kritika-db-owner
+
+    config:
+      webUrl: https://kritika.${SECRET_INTERNAL_DOMAIN}
+      auth:
+        admin:
+          # Required explicitly since 0.0.68. Kept as break-glass once Forgejo
+          # sign-in is on.
+          password: { env: ADMIN_PASSWORD }
+        # Bring-up: after creating a confidential OAuth2 app in Forgejo with
+        # redirect URI https://kritika.${SECRET_INTERNAL_DOMAIN}/auth/callback/forgejo,
+        # add its client ID here and KRITIKA_FORGEJO_CLIENT_SECRET to the
+        # Bitwarden item / ExternalSecret, then enable:
+        # forgejo:
+        #   host: forge.${SECRET_ROOT_DOMAIN}
+        #   clientId: <from Forgejo>
+        #   clientSecret: { env: FORGEJO_CLIENT_SECRET }
+        #   roleMappingExpr: 'login == "james" ? "admin" : ""'
+      forgejo:
+        # The connection name is the webhook path: /hooks/home
+        home:
+          host: forge.${SECRET_ROOT_DOMAIN}
+          accounts: [james]
+          privateKey: { env: FORGEJO_PRIVATE_KEY }
+          webhookSecret: { env: FORGEJO_WEBHOOK_SECRET }
+          # Authorized Integrations on the kritika bot (user id 170), created with
+          # `forgejo admin user create-authorized-integration` (no REST API in 17.0):
+          # issuer https://kritika.${SECRET_INTERNAL_DOMAIN}/forgejo, claim sub=kritika.
+          # Forgejo must allow-list the issuer host ([authorized_integration]
+          # ALLOWED_DOMAINS in apps/dev/forgejo) since it resolves to a private IP.
+          # `kritika`: read:user, write:repository, write:issue. All repos, because
+          # Forgejo refuses read:user on a repo-restricted token; the bot only
+          # collaborates on james/home-ops, so that is all it reaches.
+          audience: u:170:886ac7c9-5b73-4af2-ab13-1c5588a5a972
+          # `kritika-runner`: read:repository on james/home-ops only, so runners
+          # never hold a token that can write.
+          runnerAudience: u:170:adbb98cd-765a-4c81-97af-b4bbbc73dba5
+          # Forgejo has no bot flag; this is what makes pr.bot true in CEL.
+          bots: [renovate-bot]
+      providers:
+        litellm:
+          type: openai
+          baseUrl: https://litellm.${SECRET_INTERNAL_DOMAIN}/v1
+          apiKey: { env: LITELLM_API_KEY }
+          pricing:
+            claude-sonnet:
+              input: 3
+              output: 15
+              cacheRead: 0.3
+              cacheWrite: 3.75
+            # OpenAI API list price (developers.openai.com, standard tier,
+            # <=272K input). Served from the ChatGPT plan via LiteLLM, so this
+            # is the API-equivalent cost, not a bill.
+            gpt-6.1-sol:
+              input: 2
+              output: 10
+              cacheRead: 0.1
+              cacheWrite: 2.5
+            # LiteLLM aliases (apps/ai/litellm model_config.yaml); kritika
+            # prices by the name it sends. gpt-terra = gpt-6.1-terra,
+            # gpt-luna = gpt-6-luna.
+            gpt-terra:
+              input: 1
+              output: 5
+              cacheRead: 0.05
+              cacheWrite: 1.25
+            gpt-luna:
+              input: 0.1
+              output: 0.5
+              cacheRead: 0.01
+              cacheWrite: 0.125
+
+        # Alternative for GPT-5.x/6.x: kritika's native ChatGPT-plan provider
+        # (own login: kubectl port-forward 1455 + `/kritika chatgpt login`).
+        # LiteLLM's chatgpt/* models also work via chat/completions (tools
+        # included) as long as their model_info says `mode: responses`, which
+        # routes them through LiteLLM's Responses bridge.
+        # chatgpt: { type: chatgpt }
+      review:
+        # Verified 2026-11-02: tool calls work through LiteLLM chat/completions
+        # for claude-sonnet, claude-opus, deepseek-v4-flash and MiniMax-M3;
+        # 2026-11-05 for gpt-6.1-sol and gpt-6-luna; 2026-11-06 for
+        # gpt-6.1-terra. GPT runs on the ChatGPT plan's allowance instead of
+        # Anthropic credits.
+        model: litellm/gpt-terra
+        fallback: litellm/nim-orchestrator
+        agents:
+          # Renovate bumps are bounded (release notes, breaking changes,
+          # render); the cheapest model handles them. pr.bot is true for
+          # forgejo.bots above (renovate-bot).
+          - name: renovate
+            model: litellm/gpt-luna
+            when:
+              - { name: renovate, expr: pr.bot }
+      embedding:
+        # Verified: LiteLLM bge-m3 returns 1024-dim vectors.
+        model: litellm/bge-m3
+        dims: 1024
+      # No `deny` list: kritika already refuses private, loopback and link-local
+      # addresses unless an allow entry covers them, and in kritika deny WINS
+      # over allow. A 10.0.0.0/8 deny blocked the forge itself (every runner
+      # clone failed "resolves to a denied address").
+      egress:
+        allow:
+          # forge and litellm both resolve in-cluster to the
+          # envoy-internal LB IP, a private address kritika refuses unless
+          # an allow entry covers it.
+          - 10.11.0.223/32
+          # aqua downloads flate from GitHub releases.
+          - github.com
+          - api.github.com
+          - "*.githubusercontent.com"
+          # flate resolves every OCIRepository chart in the repo, so every
+          # registry they use (grep `oci://` under core/ apps/ components/) plus
+          # the hosts their blob downloads redirect to. Verified 2026-11-02 by
+          # following each registry's blob redirect.
+          - ghcr.io                 # blobs -> pkg-containers.githubusercontent.com
+          - pkg-containers.githubusercontent.com
+          - quay.io
+          - "*.quay.io"             # blobs -> cdn01.quay.io
+          - registry.k8s.io
+          - "*.registry.k8s.io"     # blobs -> cdn.registry.k8s.io
+          - "*.pkg.dev"             # manifests -> us-south1-docker.pkg.dev
+          - mirror.gcr.io
+          - codeberg.org
+          - code.forgejo.org
+          - registry.erwanleboucher.dev
+          # The repo's own chart mirror (every `oci://ocharted...` ref uses the
+          # root domain); resolves to the envoy-internal IP above, but the host
+          # must be allowed by name too.
+          - ocharted.${SECRET_ROOT_DOMAIN}
+      trigger:
+        exclude:
+          - { name: forks, expr: pr.fork }
+
+    gatewayCache:
+      enabled: true
+      storage:
+        type: filesystem
+        # About 30 MB per cold render today (flate tarball + all charts). The
+        # emptyDir can reach ~2x this plus files still being served, which the
+        # ephemeral-storage limit below covers.
+        maxSize: 512Mi
+
+    # No CPU limit; memory request == limit (repo convention). The explicit
+    # ephemeral-storage replaces the LimitRange default this namespace omits;
+    # it holds the gateway cache emptyDir.
+    resources:
+      requests:
+        cpu: 25m
+        memory: 512Mi
+        ephemeral-storage: 256Mi
+      limits:
+        memory: 512Mi
+        ephemeral-storage: 1536Mi
+
+    runner:
+      podTemplate:
+        spec:
+          # Pod-level resources: the chart accepts cpu, memory and hugepages
+          # only (no ephemeral-storage). onedr0p's first flate review OOM'd at
+          # 1Gi. Under gVisor, /tmp is RAM-backed and counts against this.
+          resources:
+            requests:
+              cpu: 25m
+              memory: 2Gi
+            limits:
+              memory: 2Gi
+          # gVisor sandbox (core/kube-system/gvisor). The RuntimeClass's
+          # nodeSelector pins runners to the runsc nodes (helheim, svartalfheim,
+          # nidavellir). /tmp is RAM-backed inside gVisor and counts against the
+          # 2Gi memory limit above.
+          runtimeClassName: gvisor
+          affinity:
+            nodeAffinity:
+              # Disk-heavy clones and caches: keep off muspelheim (CLAUDE.md).
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: NotIn
+                        values:
+                          - muspelheim
+                      - key: kubernetes.io/arch
+                        operator: In
+                        values:
+                          - amd64
+
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/arch
+                  operator: In
+                  values:
+                    - amd64
+
+    httpRoute:
+      enabled: true
+      annotations:
+        gatus.home-operations.com/endpoint: |-
+          url: https://kritika.${SECRET_INTERNAL_DOMAIN}/api/v1/meta
+          conditions: ["[STATUS] == 200"]
+      parentRefs:
+        - name: envoy-internal
+          namespace: networking
+      hostnames:
+        - kritika.${SECRET_INTERNAL_DOMAIN}
+
+    networkPolicy:
+      # type auto -> CiliumNetworkPolicy (Cilium L7 proxy is enabled).
+      extraEgress:
+        # The envoy-internal LB IP is DNAT'd to the gateway's pods before
+        # policy, so allow those pods on their own HTTPS port (10443), not the
+        # Service's 443. Reaches forge and litellm by hostname.
+        - to:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: networking
+              podSelector:
+                matchLabels:
+                  gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+          ports:
+            - port: 10443
+              protocol: TCP
+      postgres:
+        podSelector:
+          cnpg.io/cluster: kritika-postgres
+
+    monitoring:
+      serviceMonitor:
+        enabled: true
+      prometheusRule:
+        enabled: true
+      dashboards:
+        enabled: true
+        grafanaOperator:
+          enabled: true
+          # Same selector as every other GrafanaDashboard in the cluster.
+          matchLabels:
+            grafana.internal/instance: grafana

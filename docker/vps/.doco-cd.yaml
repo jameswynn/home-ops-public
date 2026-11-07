@@ -1,0 +1,25 @@
+---
+# doco-cd deploy config for the VPS stacks — https://doco.cd
+# doco-cd auto-discovers each numbered stack dir under working_dir and reconciles it.
+# external_secrets values are Bitwarden Secrets Manager secret UUIDs (not op:// paths), all
+# in the `doco-cd` project shared with docker/nas (keys prefixed VPS_), read by the doco-cd
+# machine account — not the cluster's `main` project. One UUID it can't read fails EVERY
+# stack; verify new ones first (README → How doco-cd manages this tree).
+working_dir: ./docker/vps
+reconciliation:
+  enabled: true
+auto_discovery:
+  enabled: true
+  depth: 1
+  delete: true
+force_recreate: false
+external_secrets:
+  TOWONEL_INVITE_HASH_KEY: cc277e2a-a67f-4c91-9d92-b4f701592db2
+  ACME_EMAIL: 13c3b5b3-a453-4733-aafe-b4f7015905b5
+  FORGEJO_RUNNER_UUID: 38a01279-6f46-4620-9f1c-b4f70159fd59
+  FORGEJO_RUNNER_TOKEN: e105dad8-2b37-4155-8eb6-b4f70159b7f7
+  # (TAILNET_DNS_SUFFIX was here for 03-crowdsec's MagicDNS lookup of Loki. MagicDNS
+  # turned out not to resolve from inside a container on a docker bridge, so that stack
+  # pins the tailnet address via extra_hosts instead and no longer needs this. The
+  # Bitwarden secret itself (VPS_TAILNET_DNS_SUFFIX, d1f1129e-3595-4a0a-86e6-b4f701596a20)
+  # is left in place in case a later stack wants it.)

@@ -1,0 +1,21 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/kustomization
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ./garage.yaml
+  - ./referencegrant.yaml
+  - ./secret.sops.yaml
+  - ./helmrelease.yaml
+  - ./prometheusrule.yaml
+configMapGenerator:
+  - name: mikrotik-backup-scripts
+    files:
+      - config/fetch.sh
+      - config/upload.sh
+      # The router's SSH host key, pinned (ssh-keyscan -t rsa 192.168.1.1).
+      - config/known_hosts
+generatorOptions:
+  disableNameSuffixHash: true
+  annotations:
+    kustomize.toolkit.fluxcd.io/substitute: disabled

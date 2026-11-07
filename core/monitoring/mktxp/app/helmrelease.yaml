@@ -1,0 +1,115 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: mktxp
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  values:
+    defaultPodOptions:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+    controllers:
+      mktxp:
+        annotations:
+          reloader.stakater.com/auto: "true"
+
+        # mktxp rewrites its config files in place (it fills in missing keys at
+        # startup), so they are copied from the ConfigMap into a writable dir.
+        initContainers:
+          config:
+            image: &image
+              repository: ghcr.io/akpw/mktxp
+              tag: 2.1.0@sha256:512ebe6c83c374147ac326c57ff9225b09df777883e772d417e5275bc6820e98
+            command: ["cp", "/config-ro/mktxp.conf", "/config-ro/api-ssl.crt", "/config/"]
+            securityContext: &securityContext
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 25m
+                memory: 32Mi
+              limits:
+                memory: 32Mi
+
+        containers:
+          mktxp:
+            image: *image
+            command: ["mktxp", "--cfg-dir", "/config", "export"]
+            probes:
+              liveness: &probes
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: &port 49090
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness: *probes
+            securityContext: *securityContext
+            resources:
+              requests:
+                cpu: 25m
+                memory: 128Mi
+              limits:
+                memory: 128Mi
+
+    service:
+      app:
+        controller: mktxp
+        ports:
+          http:
+            port: *port
+
+    serviceMonitor:
+      app:
+        serviceName: mktxp
+        endpoints:
+          - port: http
+            scheme: http
+            path: /metrics
+            interval: 30s
+            scrapeTimeout: 20s
+
+    persistence:
+      config-ro:
+        type: configMap
+        name: mktxp-config
+        advancedMounts:
+          mktxp:
+            config:
+              - path: /config-ro
+                readOnly: true
+      config:
+        type: emptyDir
+        globalMounts:
+          - path: /config
+      secret:
+        type: secret
+        name: mktxp-secret
+        advancedMounts:
+          mktxp:
+            mktxp:
+              - path: /secret
+                readOnly: true

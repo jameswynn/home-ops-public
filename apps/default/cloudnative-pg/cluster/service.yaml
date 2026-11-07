@@ -1,0 +1,22 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-lb
+  namespace: default
+  annotations:
+    internal.wynning.tech/hostname: "postgres.${SECRET_INTERNAL_DOMAIN}"
+    # DNS answer pinned to one IP while dual-homed (#2064); flip to the new IP at cutover.
+    internal.wynning.tech/target: "${SVC_POSTGRESQL_ADDR}"
+    lbipam.cilium.io/ips: "${SVC_POSTGRESQL_ADDR}"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ports:
+    - name: postgres
+      port: 5432
+      protocol: TCP
+      targetPort: 5432
+  selector:
+    cnpg.io/cluster: postgres
+    cnpg.io/instanceRole: primary

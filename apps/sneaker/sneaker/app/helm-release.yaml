@@ -1,0 +1,184 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app sneaker
+  namespace: sneaker
+spec:
+  interval: 15m
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  maxHistory: 3
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    defaultPodOptions:
+      imagePullSecrets:
+        - name: forge-wynning-tech-creds
+    controllers:
+      sneakerservice:
+        type: statefulset
+        annotations:
+          reloader.stakater.com/auto: "true"
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: "OnRootMismatch"
+        initContainers:
+          init-db:
+            image:
+              repository: ghcr.io/home-operations/postgres-init
+              tag: 18.6
+              pullPolicy: IfNotPresent
+            envFrom:
+              - secretRef:
+                  name: sneaker-init-db
+        containers:
+          main:
+            image:
+              repository: forge.wynning.tech/james/sneakerservice
+              tag: &version 0.2.0
+              # pullPolicy: Always
+            envFrom:
+              - secretRef:
+                  name: *app
+            env:
+              - name: SNEAKER_DATA_DIR
+                value: ./data/images
+            resources:
+              requests:
+                cpu: 10m
+                memory: 750Mi
+              limits:
+                cpu: 1000m
+                memory: 1250Mi
+
+      sneaker-ui:
+        type: statefulset
+        annotations:
+          reloader.stakater.com/auto: "true"
+        pod:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: "OnRootMismatch"
+        containers:
+          main:
+            image:
+              repository: forge.wynning.tech/james/sneaker-ui
+              tag: *version
+              # pullPolicy: Always
+            env:
+              - name: AUTH_AUTHENTIK_CLIENT_ID
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: AUTH_CLIENT_ID
+              - name: AUTH_AUTHENTIK_CLIENT_SECRET
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: AUTH_CLIENT_SECRET
+              - name: AUTH_AUTHENTIK_ISSUER
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: AUTH_ISSUER_URL
+              - name: AUTH_AUTHENTIK_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: AUTH_TOKEN_URL
+              - name: AUTH_SECRET
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: AUTH_SECRET
+              - name: ROOT_URL
+                value: http://sneaker-sneakerservice:5000
+              - name: ORIGIN
+                value: https://sneaker.${SECRET_ROOT_DOMAIN}
+              - name: AUTH_TRUST_HOST
+                value: "true"
+              - name: PROTOCOL_HEADER
+                value: x-forwarded-proto
+              - name: HOST_HEADER
+                value: x-forwarded-host
+              - name: BODY_SIZE_LIMIT
+                value: 10496000 #10MB
+
+            resources:
+              requests:
+                cpu: 10m
+                memory: 250Mi
+              limits:
+                cpu: 1000m
+                memory: 750Mi
+
+    service:
+      sneakerservice:
+        controller: sneakerservice
+        ports:
+          http:
+            port: 5000
+
+      sneaker-ui:
+        controller: sneaker-ui
+        ports:
+          http:
+            port: 8080
+
+    # serviceMonitor:
+    #   sneakerservice:
+    #     enabled: true
+    #   sneaker-ui:
+    #     enabled: true
+
+    ingress:
+      sneaker-ui:
+        enabled: true
+        className: external-nginx
+        annotations:
+          gatus.home-operations.com/enabled: "false"
+          nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+          nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+          nginx.ingress.kubernetes.io/proxy-body-size: 10M
+          gethomepage.dev/enabled: "true"
+          gethomepage.dev/name: "Sneaker Prod"
+          gethomepage.dev/description: "Send your workouts to the fediverse!"
+          gethomepage.dev/group: "Applications"
+          gethomepage.dev/icon: "https://sneaker.${SECRET_ROOT_DOMAIN}/favicon.svg"
+          external-dns.alpha.kubernetes.io/hostname: "sneaker.${SECRET_ROOT_DOMAIN}"
+        hosts:
+          - host: &host "sneaker.${SECRET_ROOT_DOMAIN}"
+            paths:
+              - path: /
+                pathType: Prefix
+                service:
+                  identifier: sneaker-ui
+                  port: http
+        tls:
+          - hosts:
+              - *host
+
+    persistence:
+      data:
+        enabled: true
+        existingClaim: sneaker-data
+        advancedMounts:
+          sneakerservice:
+            main:
+              - path: /app/data

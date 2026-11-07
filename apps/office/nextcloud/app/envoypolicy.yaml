@@ -1,0 +1,12 @@
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: nextcloud-request-buffer
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: nextcloud
+  requestBuffer:
+    limit: 500Mi

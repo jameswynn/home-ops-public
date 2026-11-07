@@ -1,0 +1,123 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: mikrotik-backup
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: app-template
+  interval: 30m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  values:
+    defaultPodOptions:
+      # 65534 (nobody) rather than 1000: OpenSSH refuses to run for a uid with
+      # no passwd entry, and alpine/git only ships root and nobody.
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+
+    controllers:
+      mikrotik-backup:
+        type: cronjob
+        cronjob:
+          # 03:00 local (controller-manager is America/Chicago). Clear of the
+          # 01:00 longhorn backups and the 06:00 Minio→B2 mirror.
+          schedule: "0 3 * * *"
+          concurrencyPolicy: Forbid
+          backoffLimit: 2
+          successfulJobsHistory: 3
+          failedJobsHistory: 3
+
+        initContainers:
+          fetch:
+            image:
+              repository: docker.io/alpine/git
+              tag: v2.54.0@sha256:ac6c828f15d82775d204d3d75112e1d34af8945da80ccf922713c9891ba68e7a
+            command: ["/bin/sh", "/scripts/fetch.sh"]
+            securityContext: &securityContext
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources: &resources
+              requests:
+                cpu: 25m
+                memory: 64Mi
+              limits:
+                memory: 64Mi
+
+        containers:
+          upload:
+            image:
+              repository: ghcr.io/rclone/rclone
+              tag: 1.76.0
+            command: ["/bin/sh", "/scripts/upload.sh"]
+            env:
+              HOME: /tmp
+              RCLONE_CONFIG: /tmp/rclone.conf
+              RCLONE_CONFIG_GARAGE_TYPE: s3
+              RCLONE_CONFIG_GARAGE_PROVIDER: Other
+              RCLONE_CONFIG_GARAGE_ENV_AUTH: "false"
+              RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE: "true"
+              RCLONE_CONFIG_GARAGE_ENDPOINT:
+                valueFrom:
+                  secretKeyRef: {name: mikrotik-backup, key: endpoint}
+              RCLONE_CONFIG_GARAGE_REGION:
+                valueFrom:
+                  secretKeyRef: {name: mikrotik-backup, key: region}
+              RCLONE_CONFIG_GARAGE_ACCESS_KEY_ID:
+                valueFrom:
+                  secretKeyRef: {name: mikrotik-backup, key: access-key-id}
+              RCLONE_CONFIG_GARAGE_SECRET_ACCESS_KEY:
+                valueFrom:
+                  secretKeyRef: {name: mikrotik-backup, key: secret-access-key}
+              # Encrypts names and contents before upload. The passwords are
+              # rclone-obscured (reversible with `rclone reveal`), from SOPS.
+              RCLONE_CONFIG_CRYPT_TYPE: crypt
+              RCLONE_CONFIG_CRYPT_REMOTE: garage:mikrotik-backup
+              RCLONE_CONFIG_CRYPT_PASSWORD:
+                valueFrom:
+                  secretKeyRef: {name: mikrotik-backup-secret, key: CRYPT_PASSWORD}
+              RCLONE_CONFIG_CRYPT_PASSWORD2:
+                valueFrom:
+                  secretKeyRef: {name: mikrotik-backup-secret, key: CRYPT_PASSWORD2}
+            securityContext: *securityContext
+            resources: *resources
+
+    persistence:
+      scripts:
+        type: configMap
+        name: mikrotik-backup-scripts
+        globalMounts:
+          - path: /scripts
+            readOnly: true
+      secret:
+        type: secret
+        name: mikrotik-backup-secret
+        defaultMode: 0440
+        advancedMounts:
+          mikrotik-backup:
+            fetch:
+              - path: /secret
+                readOnly: true
+      work:
+        type: emptyDir
+        globalMounts:
+          - path: /work
+      tmp:
+        type: emptyDir
+        globalMounts:
+          - path: /tmp

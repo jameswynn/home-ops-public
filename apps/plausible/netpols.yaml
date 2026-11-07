@@ -1,0 +1,70 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: plausible-namespace-policy
+  namespace: &namespace plausible
+spec:
+  endpointSelector: {}
+  ingress:
+    # Allow ingress from all envoy-gateway in the networking namespace
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            # This label must exist on the namespace object itself
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Allow intra-namespace traffic (pod-to-pod within ns)
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": *namespace
+
+    # Allow ingress from prometheus
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: prometheus
+            # This label must exist on the namespace object itself
+            "k8s:io.kubernetes.pod.namespace": monitoring
+
+  egress:
+    # Allow intra-namespace traffic
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": *namespace
+
+    # Allow anubis dragonfly instance
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": anubis
+            app: anubis-dragonfly
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+    # Allow default postgres cluster
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": default
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # Allow DNS
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow internet egress
+    - toEntities:
+        - world

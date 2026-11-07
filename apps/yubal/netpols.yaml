@@ -1,0 +1,127 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: yubal-namespace-policy
+  namespace: &namespace yubal
+spec:
+  # Egress for every pod in the namespace. Ingress lives in the two policies
+  # below, because music-importer's review UI must NOT be reachable from the
+  # yubal pod (it trusts a user header set by the gateway, #2216) and Cilium
+  # unions allow rules per endpoint - a namespace-wide "allow intra-namespace
+  # ingress" would override anything stricter.
+  endpointSelector: {}
+  egress:
+    # Allow intra-namespace traffic
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": *namespace
+
+    # Allow the internal envoy gateway.
+    #
+    # Every self-hosted service music-importer depends on sits behind this one
+    # gateway, because split-horizon DNS resolves all three public hostnames to
+    # its LoadBalancer VIP:
+    #
+    #   navidrome.wynning.tech    trigger a rescan after an import
+    #   ntfy.wynning.tech         quarantine / added / degraded notifications
+    #   search.int.wynning.tech   SearXNG, the last-resort cover art source
+    #
+    # This MUST be toEndpoints, not toCIDR of the VIP. Cilium translates a
+    # service VIP to its backing pod BEFORE evaluating egress policy, so the
+    # destination identity is the envoy pod, never the VIP address. A
+    # `toCIDR: <VIP>/32` rule therefore never matches — verified with hubble,
+    # which showed the drop as:
+    #
+    #   music-importer -> networking/envoy-internal-...:10443 (ID:6390)
+    #   policy-verdict:none EGRESS DENIED
+    #
+    # This is the exact mirror of the ingress rule above.
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Allow DNS
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    - toEntities:
+        - world
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: yubal-namespace-ingress
+  namespace: &namespace yubal
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: NotIn
+        values: [music-importer]
+  ingress:
+    # envoy-internal only: yubal's route is on that gateway.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Intra-namespace: music-importer -> yubal:8080 (job polling).
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": *namespace
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: music-importer-ingress
+  namespace: yubal
+spec:
+  description: The review UI authenticates by trusting X-authentik-username from the forward-auth SecurityPolicy; only the envoy-internal pods may reach it (#2216).
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: music-importer
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+            "k8s:io.kubernetes.pod.namespace": networking
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+# kopiur mover Jobs PATCH their results (kopia snapshot id, stats, timing)
+# back onto the Snapshot CR; without API access the CR stays id-less (#2386).
+# Scoped to kopiur pods only; Cilium unions it with the namespace policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kopiur-mover-apiserver
+  namespace: yubal
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: kopiur
+  egress:
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - protocol: TCP
+              port: "6443"

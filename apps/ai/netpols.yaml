@@ -1,0 +1,293 @@
+---
+# Network policy for the ai namespace (#2069).
+#
+# Split into several policies on purpose. Cilium unions every rule whose
+# endpointSelector matches a pod, so a single `endpointSelector: {}` policy
+# with "allow intra-namespace ingress" would also let every pod in ai reach the
+# ToolHive MCP backends — which is exactly the hole #2069 is about. The
+# ToolHive pods therefore get their own ingress policies and are carved out of
+# the generic one.
+#
+# Flow inventory (hubble + conntrack + manifests, 2026-10-31) lives on #2069.
+#
+# Conventions worth knowing before editing:
+#   - kubelet probes come from the node (reserved:host) and are always allowed
+#     by Cilium; no rule needed.
+#   - Anything reached by hostname (*.wynning.tech, *.int.wynning.tech) lands
+#     on the envoy-internal pods, so it MUST be `toEndpoints` on the envoy
+#     labels — a `toCIDR` of the gateway VIP never matches (see
+#     apps/yubal/netpols.yaml for the hubble evidence).
+#   - `world` covers the NAS (192.168.1.3) and the public internet; it does
+#     not cover cluster pods or nodes.
+#
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: ai-egress
+  namespace: ai
+spec:
+  description: Egress allow-list for every pod in ai (ingress is handled per-group below).
+  endpointSelector: {}
+  egress:
+    # Intra-namespace: vmcp -> mcp proxies/memini/endurain-mcp, proxies -> stdio
+    # backends, litellm/memini -> their dragonfly/postgres, ollama-ui -> ollama.
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": ai
+
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # toolhive-operator and every proxy-runner watch the API; the flux-operator
+    # MCP and the CNPG instance manager talk to it too.
+    - toEntities:
+        - kube-apiserver
+
+    # Hostname-addressed targets, all via the internal gateway: Authentik OIDC
+    # discovery/JWKS (vmcp), forge.wynning.tech (forgejo MCPs),
+    # joplin.wynning.tech, search.int (searxng MCP), cloud.wynning.tech
+    # (dav-mcp), litellm.int.
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.networking.k8s.io/gateway-name: envoy-internal
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # litellm -> shared CNPG cluster.
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": default
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # memini-postgres (CNPG in this namespace) -> barman-cloud plugin for WAL
+    # archiving and backups. The S3 side of that goes to the NAS (world).
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": default
+            app.kubernetes.io/name: plugin-barman-cloud
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+
+    # MCP backends -> the apps they front. Ingress-side rules exist in
+    # apps/actual/netpols.yaml; ghostfolio/home have netpols in the repo but
+    # they are not applied — when they are, they need a matching rule from ai.
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": actual
+            app.kubernetes.io/name: actual
+      toPorts:
+        - ports:
+            - port: "5006"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": ghostfolio
+            app.kubernetes.io/name: ghostfolio
+      toPorts:
+        - ports:
+            - port: "3333"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": home
+            app.kubernetes.io/name: home-assistant
+      toPorts:
+        - ports:
+            - port: "8123"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": default
+            app.kubernetes.io/name: karakeep
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": default
+            app.kubernetes.io/name: koffan
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": default
+            app.kubernetes.io/name: endurain
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # grafana MCP -> grafana; litellm -> prometheus (PROMETHEUS_URL).
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": monitoring
+            app: grafana
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": monitoring
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+
+    # Public APIs (OpenAI/Anthropic via litellm, context7, kubesearch.dev and
+    # GitHub clones, ollama model pulls) plus the NAS: S3 for memini-postgres
+    # backups.
+    - toEntities:
+        - world
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: ai-ingress
+  namespace: ai
+spec:
+  description: Ingress for the non-ToolHive pods (ollama, ollama-ui, litellm, memini, dav-mcp, endurain-mcp, dragonflies, memini-postgres, toolhive-operator).
+  endpointSelector:
+    matchExpressions:
+      - key: toolhive
+        operator: DoesNotExist
+  ingress:
+    # Every HTTPRoute in this namespace is on envoy-internal.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.networking.k8s.io/gateway-name: envoy-internal
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Intra-namespace, incl. vmcp -> memini:8080 / endurain-mcp:8000.
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": ai
+
+    # ServiceMonitor memini:9090, CNPG PodMonitor :9187, dragonfly admin :9999.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: prometheus
+            "k8s:io.kubernetes.pod.namespace": monitoring
+
+    # CNPG operator polls the instance status port.
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": default
+            app.kubernetes.io/name: cloudnative-pg
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+
+    # Dragonfly operator polls the admin port of litellm-dragonfly and
+    # toolhive-dragonfly (role/health); without this it logged ~1 denied
+    # probe/min per instance (#2069 drop check).
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": database
+            app.kubernetes.io/name: dragonfly-operator
+      toPorts:
+        - ports:
+            - port: "9999"
+              protocol: TCP
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: ollama-lb-ingress
+  namespace: ai
+spec:
+  description: ollama's LoadBalancer (SVC_OLLAMA_ADDR, externalTrafficPolicy Local) is reachable from the LAN without going through the gateway.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: ollama
+  ingress:
+    - fromCIDRSet:
+        - cidr: 10.0.0.0/8
+        - cidr: 192.168.0.0/16
+      toPorts:
+        - ports:
+            - port: "11434"
+              protocol: TCP
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-vmcp-ingress
+  namespace: ai
+spec:
+  description: The authenticated aggregator (mcp.int) is the only ToolHive pod the gateway may reach.
+  endpointSelector:
+    matchLabels:
+      app: virtualmcpserver
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.networking.k8s.io/gateway-name: envoy-internal
+            "k8s:io.kubernetes.pod.namespace": networking
+      toPorts:
+        - ports:
+            - port: "4483"
+              protocol: TCP
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-proxy-ingress
+  namespace: ai
+spec:
+  description: mcp-<name>-proxy pods accept only the vmcp; the per-backend servers have no auth of their own (#2069).
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: mcpserver
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: virtualmcpserver
+            "k8s:io.kubernetes.pod.namespace": ai
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-backend-ingress
+  namespace: ai
+spec:
+  description: The stdio/http MCP server StatefulSets (labelled toolhive-transport) accept only their proxy-runner.
+  endpointSelector:
+    matchExpressions:
+      - key: toolhive-transport
+        operator: Exists
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: mcpserver
+            "k8s:io.kubernetes.pod.namespace": ai

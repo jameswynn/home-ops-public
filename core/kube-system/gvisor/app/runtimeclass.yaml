@@ -1,0 +1,19 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/node.k8s.io/runtimeclass_v1.json
+# gVisor sandbox. The `runsc` handler and the node label are installed by
+# ansible/playbooks/gvisor.yaml (task ansible:gvisor); k3s does not auto-detect
+# runsc. Pods using it need Cilium's socketLB.hostNamespaceOnly (bpf-lb-sock-hostns-only),
+# which is already on: gVisor's netstack bypasses the host connect() hook.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+scheduling:
+  nodeSelector:
+    sandbox.gvisor.dev/runsc: "true"
+overhead:
+  podFixed:
+    # The Sentry (user-space kernel) lives in the pod's cgroup; make the
+    # scheduler account for it. Tune from observed usage.
+    memory: 64Mi

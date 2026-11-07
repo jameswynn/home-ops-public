@@ -1,0 +1,98 @@
+---
+# Install gVisor (runsc) and register it with k3s's containerd as the `runsc`
+# handler, for the `gvisor` RuntimeClass (core/kube-system/gvisor). Used to
+# sandbox untrusted workloads such as kritika's review runners.
+#
+# Targets the `gvisor` inventory group only. muspelheim is excluded on purpose:
+# restarting k3s there restarts an etcd member on its fragile BX500 disk, and the
+# workloads this is for are already kept off it. niflheim (arm64, tainted) is
+# excluded because nothing sandboxed schedules there.
+#
+# k3s does not auto-detect runsc (only crun/nvidia/wasm runtimes), so the runtime
+# is added as a containerd drop-in (config-v3.toml.d/, imported by k3s's base
+# config). containerd only reads it at startup, so changed nodes restart one at a time.
+- hosts:
+    - gvisor
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: gVisor | Add the apt repository
+      ansible.builtin.deb822_repository:
+        name: gvisor
+        types: deb
+        uris: https://storage.googleapis.com/gvisor/releases
+        suites: release
+        components: main
+        architectures: "{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}"
+        signed_by: https://gvisor.dev/archive.key
+        state: present
+
+    - name: gVisor | Install runsc
+      ansible.builtin.apt:
+        name: runsc
+        state: present
+        update_cache: true
+      notify: Restart k3s
+
+    # k3s's base containerd template already imports config-v3.toml.d/*.toml, so
+    # a drop-in adds the runtime without overriding k3s's generated config.
+    - name: gVisor | Create the containerd drop-in directory
+      ansible.builtin.file:
+        path: /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: gVisor | Register the runsc runtime with containerd
+      ansible.builtin.copy:
+        dest: /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/gvisor.toml
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by ansible (playbooks/gvisor.yaml) - do not edit on the node.
+          [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
+            runtime_type = "io.containerd.runsc.v1"
+      notify: Restart k3s
+
+    - name: gVisor | Label the node for the RuntimeClass nodeSelector
+      ansible.builtin.command: >-
+        kubectl label node {{ inventory_hostname }} sandbox.gvisor.dev/runsc=true --overwrite
+      delegate_to: localhost
+      become: false
+      environment:
+        KUBECONFIG: "{{ playbook_dir }}/../../kubeconfig"
+      register: gvisor_label
+      changed_when: "'not labeled' not in gvisor_label.stdout"
+
+    - name: gVisor | Flush handlers before verifying
+      ansible.builtin.meta: flush_handlers
+
+    # Node Ready can precede containerd's CRI finishing init after a restart.
+    - name: gVisor | Verify containerd loaded the runsc runtime
+      ansible.builtin.shell: >-
+        k3s crictl info | grep -q '"runsc"'
+      register: gvisor_crictl
+      until: gvisor_crictl.rc == 0
+      retries: 12
+      delay: 5
+      changed_when: false
+
+  handlers:
+    - name: Restart k3s
+      ansible.builtin.systemd:
+        name: "{{ 'k3s' if inventory_hostname in groups['master'] else 'k3s-agent' }}"
+        state: restarted
+
+    - name: Wait for node Ready
+      ansible.builtin.command: >-
+        kubectl wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=300s
+      delegate_to: localhost
+      become: false
+      environment:
+        KUBECONFIG: "{{ playbook_dir }}/../../kubeconfig"
+      changed_when: false
+      listen: Restart k3s

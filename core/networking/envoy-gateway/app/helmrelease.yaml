@@ -1,0 +1,44 @@
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: envoy-gateway
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: v1.9.3
+  url: oci://mirror.gcr.io/envoyproxy/gateway-helm
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: envoy-gateway
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: envoy-gateway
+  interval: 1h
+  # The chart owns the Gateway API CRDs (Gateway API experimental channel, the
+  # version envoy-gateway ships) and its own EnvoyProxy/SecurityPolicy/... CRDs.
+  # Helm's default skips CRDs on upgrade, so without this they would stay at
+  # install-day versions forever. Same pattern as onedr0p/home-ops.
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  values:
+    config:
+      envoyGateway:
+        provider:
+          type: Kubernetes
+          kubernetes:
+            deploy:
+              type: GatewayNamespace
+        extensionApis:
+          enableEnvoyPatchPolicy: true
+    global:
+      imageRegistry: mirror.gcr.io

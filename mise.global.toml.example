@@ -1,0 +1,41 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+#
+# OPTIONAL — not used by this repo.
+#
+# The Brewfile mixes cluster tooling with personal shell tools. The cluster half
+# now lives in ./mise.toml; this file is the other half, for anyone who wants
+# mise to manage those too. It is a template, not an active config:
+#
+#   cp mise.global.toml.example ~/.config/mise/config.toml   # or merge by hand
+#   mise install
+#
+# Nothing in this repo depends on any of it.
+
+[tools]
+
+## Shell & navigation #########################################################
+atuin = "latest"                # [brew] shell history
+starship = "latest"             # [brew] prompt
+zellij = "latest"               # [brew] terminal multiplexer
+zoxide = "latest"               # [brew] smarter cd
+eza = "latest"                  # [brew] ls replacement
+bat = "latest"                  # [brew] cat with highlighting
+fd = "latest"                   # [brew] find replacement
+ripgrep = "latest"              # [brew] (`rg`)
+tealdeer = "latest"             # [brew] tldr pages
+"github:Canop/dysk" = "latest"  # [brew] disk usage; not in the mise registry
+
+## Git & forge ################################################################
+gh = "latest"                   # [brew] GitHub CLI
+glab = "latest"                 # [brew] GitLab CLI
+"github:hickford/git-credential-oauth" = "latest"  # [brew] not in the mise registry
+
+## Misc #######################################################################
+"pipx:trash-cli" = "latest"     # [brew] not in the mise registry (Python package)
+
+# Deliberately absent:
+#
+#   direnv  — the repo's two .envrc files were replaced by mise [env] blocks.
+#             Add it back here if you still use direnv in other projects.
+#   ugrep   — upstream ships only Windows binaries on GitHub releases, so mise
+#             cannot install it on Linux/macOS. Use brew or apt.

@@ -1,0 +1,108 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carddav
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carddav
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: carddav
+    spec:
+      tolerations:
+        - key: arm
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 0
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: data
+          emptyDir:
+            sizeLimit: 64Mi
+      containers:
+        - name: mcp
+          image: ghcr.io/pi0n00r/nextcloud-mcp-server:v1.8.5@sha256:b331ac592b4389bfd548e6fd4a2d62a993864042bc6d28251c2de6377b7ba2f9
+          args:
+            - --enable-app
+            - contacts
+          env:
+            - name: NEXTCLOUD_HOST
+              value: https://cloud.${SECRET_ROOT_DOMAIN}
+            - name: MCP_DEPLOYMENT_MODE
+              value: single_user_basic
+            - name: TMPDIR
+              value: /tmp
+            - name: TOKEN_STORAGE_DB
+              value: /tmp/nextcloud-mcp-tokens.db
+            - name: ENABLE_SEMANTIC_SEARCH
+              value: "false"
+            - name: NEXTCLOUD_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: dav-mcp-secrets
+                  key: NEXTCLOUD_CARDDAV_USERNAME
+            - name: NEXTCLOUD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dav-mcp-secrets
+                  key: NEXTCLOUD_CARDDAV_APP_PASSWORD
+          ports:
+            - name: mcp
+              containerPort: 8000
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /app/data
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: mcp
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: mcp
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 25m
+              memory: 512Mi
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 1Gi
+              ephemeral-storage: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-carddav
+spec:
+  selector:
+    app.kubernetes.io/name: carddav
+  ports:
+    - name: mcp
+      port: 8000
+      targetPort: mcp

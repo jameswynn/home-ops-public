@@ -1,0 +1,41 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/prometheusrule_v1.json
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: toolhive
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: toolhive.rules
+      rules:
+        # Metric source: kube-state-metrics customResourceState for
+        # toolhive.stacklok.dev VirtualMCPServer (see
+        # core/monitoring/kube-prometheus-stack/app/helm-release.yaml). The
+        # value encodes the condition status (1 = True, 0 = False); there is no
+        # `status` label.
+        - alert: VirtualMCPServerNotReady
+          annotations:
+            description: VirtualMCPServer {{ $labels.name }} in namespace {{ $labels.namespace }} has not been ready for 15 minutes.
+            summary: VirtualMCPServer not ready
+          expr: |
+            kube_customresource_status_condition{
+              customresource_kind="VirtualMCPServer",
+              condition="Ready"
+            } == 0
+          for: 15m
+          labels:
+            severity: warning
+        - alert: VirtualMCPServerAbsent
+          annotations:
+            description: No VirtualMCPServer resources found.
+            summary: VirtualMCPServer absent
+          expr: |
+            absent(kube_customresource_status_condition{
+              customresource_kind="VirtualMCPServer"
+            })
+          for: 5m
+          labels:
+            severity: warning

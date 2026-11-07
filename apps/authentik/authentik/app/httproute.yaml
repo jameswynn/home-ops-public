@@ -1,0 +1,22 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.networking.k8s.io/httproute_v1.json
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: authentik-webfinger
+spec:
+  parentRefs:
+    - name: envoy-towonel
+      namespace: networking
+    - name: envoy-internal
+      namespace: networking
+  hostnames:
+    - ${SECRET_ROOT_DOMAIN}
+  rules:
+    - backendRefs:
+        - name: authentik-server
+          port: 80
+      matches:
+        - path:
+            type: PathPrefix
+            value: /.well-known/webfinger

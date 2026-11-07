@@ -1,0 +1,23 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/externaldns.k8s.io/dnsendpoint_v1alpha1.json
+apiVersion: externaldns.k8s.io/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: towonel-agent
+spec:
+  endpoints:
+    # towonel.wynning.tech -> the VPS, grey (DNS-only) so the tunnel's raw TLS/SNI works.
+    # Published by the cloudflare-dns-towonel external-dns instance; the primary (forced)
+    # instance excludes this name.
+    #
+    # Migrated app hostnames do NOT CNAME to this name -- they carry their own A record to
+    # the same address, from the envoy-towonel gateway's target annotation. See that
+    # annotation for why. This record stays because the name is still referenced directly
+    # (the agent's service config, gatus) -- it is just no longer a CNAME target.
+    - dnsName: "towonel.${SECRET_ROOT_DOMAIN}"
+      recordType: A
+      targets:
+        - "${SVC_TOWONEL_ADDR}"
+      providerSpecific:
+        - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+          value: "false"

@@ -1,0 +1,11 @@
+---
+# Rendered into /etc/rancher/k3s/registries.yaml by playbooks/registries.yaml.
+# zot stores passthrough content under an upstream-host prefix
+# (e.g. /v2/docker.io/library/alpine), so each mirror rewrites the repo path.
+# The "*" entry keeps Spegel (--embedded-registry) active for every other registry.
+k3s_registry_zot_endpoint: https://zot.core.wynning.tech
+k3s_registry_zot_upstreams:
+  - docker.io
+  - ghcr.io
+  - quay.io
+  - mirror.gcr.io

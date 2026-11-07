@@ -1,0 +1,14 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: flux-system
+resources:
+  - flux-instance/ks.yaml
+  - flux-operator/ks.yaml
+  - github-receiver/ks.yaml
+  - monitoring/ks.yaml
+  - sops
+  - toolhive-mcp-rbac
+components:
+  - ../../components/common
+  - ../../components/cluster-vars

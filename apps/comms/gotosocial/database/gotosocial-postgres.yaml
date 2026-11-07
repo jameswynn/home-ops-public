@@ -1,0 +1,135 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/postgresql.cnpg.io/cluster_v1.json
+# Target for the SQLite -> Postgres migration (#2302). Roles and databases are
+# declared as DatabaseRole/Database CRs alongside this Cluster, not via initdb
+# or postgres-init; initdb keeps its default unused `app` database.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: gotosocial-postgres
+spec:
+  # Single instance, like memini/kritika: longhorn replicates the volume at the
+  # block layer, so instance-level HA would only buy faster failover at 3x the
+  # write amplification.
+  instances: 1
+  # Plain CNPG operand (no extensions needed). standard-trixie rather than the
+  # bare `18.x` tag, which is the legacy bullseye-based image.
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.6-standard-trixie
+  primaryUpdateStrategy: unsupervised
+  # Flipped to true only for the pgloader step of the migration (it needs
+  # superuser to disable triggers), then back.
+  enableSuperuserAccess: false
+  # Source sqlite.db is 10.5 GB with zero free pages; Postgres plus indexes is
+  # typically 1.5-2x that. WAL on its own volume so a burst of federation
+  # writes or the bulk load cannot fill the data volume.
+  storage:
+    size: 40Gi
+    storageClass: longhorn
+  walStorage:
+    size: 10Gi
+    storageClass: longhorn
+  # No CPU limit; memory request == limit (repo convention). Cold-start sizing:
+  # resize from observed p95 after a week on real traffic.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 2Gi
+      ephemeral-storage: 200Mi
+    limits:
+      memory: 2Gi
+      ephemeral-storage: 200Mi
+  postgresql:
+    parameters:
+      max_connections: "50"
+      shared_buffers: 512MB
+      effective_cache_size: 1536MB
+      work_mem: 8MB
+      maintenance_work_mem: 256MB
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: gotosocial-postgres
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                  - amd64
+      # muspelheim's etcd WAL shares an LVM VG with the Longhorn replica store
+      # on a DRAM-less BX500 -- the disk #2302's stalls ran on. Soft rather than
+      # required so a single-instance cluster still schedules if every other
+      # node is unavailable.
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                  - muspelheim
+---
+# yaml-language-server: $schema=https://github.com/datreeio/CRDs-catalog/raw/refs/heads/main/barmancloud.cnpg.io/objectstore_v1.json
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: gotosocial-postgres
+spec:
+  retentionPolicy: 30d
+  instanceSidecarConfiguration:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+  configuration:
+    # serverName defaults to the cluster name: s3://postgresql/gotosocial-postgres/
+    destinationPath: s3://postgresql/
+    endpointURL: https://${SECRET_GARAGE_URL}
+    s3Credentials:
+      region:
+        name: postgresql-garage
+        key: GARAGE_REGION
+      accessKeyId:
+        name: postgresql-garage
+        key: GARAGE_ACCESS_KEY
+      secretAccessKey:
+        name: postgresql-garage
+        key: GARAGE_SECRET_KEY
+    wal:
+      compression: zstd
+    data:
+      compression: gzip
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/postgresql.cnpg.io/scheduledbackup_v1.json
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: gotosocial-postgres
+spec:
+  schedule: "0 15 4 * * *"
+  immediate: true
+  backupOwnerReference: self
+  cluster:
+    name: gotosocial-postgres
+  # Archives via the barman-cloud plugin (no spec.backup), see memini.
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/podmonitor_v1.json
+# Explicit PodMonitor: CNPG deprecated spec.monitoring.enablePodMonitor.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: gotosocial-postgres
+spec:
+  selector:
+    matchLabels:
+      cnpg.io/cluster: gotosocial-postgres
+  podMetricsEndpoints:
+    - port: metrics

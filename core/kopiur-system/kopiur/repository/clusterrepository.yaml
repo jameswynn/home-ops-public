@@ -1,0 +1,93 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.home-operations.com/kopiur.home-operations.com/clusterrepository_v1alpha1.json
+apiVersion: kopiur.home-operations.com/v1alpha1
+kind: ClusterRepository
+metadata:
+  name: nas
+spec:
+  allowedNamespaces:
+    all: true
+  # Adopt the existing VolSync kopia repository on the NAS; never initialise a
+  # new one if the connect fails.
+  create:
+    enabled: false
+  backend:
+    filesystem:
+      path: /repo
+      volume:
+        nfs:
+          server: ${SECRET_NAS_URL}
+          path: /volume1/kopia
+  encryption:
+    passwordSecretRef:
+      name: kopiur-repository-secret
+      namespace: kopiur-system
+      key: KOPIA_PASSWORD
+  # kopia's recorded maintenance owner was simple-todo@simple-todo (the first
+  # VolSync mover, which created the repo). simple-todo is disabled, so nothing
+  # had maintained the repo since 2026-10-07; no other VolSync mover is owner.
+  # Force claims the lease for kopiur@kopiur-clusterrepository-nas.
+  maintenance:
+    enabled: true
+    takeoverPolicy: Force
+    schedule:
+      quick:
+        cron: 0 */6 * * *
+        jitter: 30m
+      # Off the 11:00 UTC Longhorn trim/backup window.
+      full:
+        cron: 0 3 * * *
+        jitter: 1h
+    failurePolicy:
+      activeDeadlineSeconds: 14400
+    mover:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 2Gi
+        limits:
+          memory: 2Gi
+  moverDefaults:
+    # The NFS export is owned by 1000:1000 (the VolSync mover UID); movers
+    # default to 65532 and fsGroup is ignored on NFS.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+    securityContext:
+      runAsUser: 1000
+      runAsGroup: 1000
+    cache:
+      # kopia's 5000 MiB defaults exceed the 5Gi cache PVC, so the sweeper
+      # never runs and the cache fills the volume. The metadata budget applies
+      # twice (kopia caps the index-blobs cache at the same size).
+      contentCacheSizeMb: 512
+      metadataCacheSizeMb: 1024
+  scheduleDefaults:
+    timezone: ${CLUSTER_TZ}
+  # kopia web UI (replaces core/volsync/kopia). Routed by httproute.yaml behind
+  # Authentik forward-auth; HTTP Basic (kopia-ui-auth) is defence in depth and
+  # is what Authentik injects. Read-only: browse + restore, never mutate backups.
+  server:
+    namespace: kopiur-system
+    readOnly: true
+    auth:
+      secretRef:
+        name: kopia-server-auth
+        usernameKey: KOPIA_SERVER_USERNAME
+        passwordKey: KOPIA_SERVER_PASSWORD
+    # Writes the NFS export like a mover; fsGroup is ignored on NFS.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+    securityContext:
+      runAsUser: 1000
+      runAsGroup: 1000
+    resources:
+      requests:
+        cpu: 10m
+        memory: 1Gi
+      limits:
+        memory: 1Gi

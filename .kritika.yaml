@@ -1,0 +1,26 @@
+---
+# yaml-language-server: $schema=https://kritika.home-operations.com/kritika.schema.json
+# kritika review config for this repo. kritika reads it from the PR's merge
+# base, so a PR cannot change its own rules, tools or context.
+skills:
+  # .claude/skills/reviewing-pull-requests: how to review a Renovate update or a
+  # manifest change here (upstream, breaking changes, exposure, rendering).
+  scope:
+    reviewing-pull-requests:
+      load: true
+tools:
+  # Kept in lockstep with mise.toml by the Renovate flate group. Kritika needs
+  # the exact v-prefixed release tag.
+  # renovate: datasource=github-releases depName=home-operations/flate
+  aqua:home-operations/flate: "v0.6.5"
+  # The review skill reads registries with crane and narrows renders with yq.
+  # renovate: datasource=github-releases depName=google/go-containerregistry
+  aqua:google/go-containerregistry: "v0.22.1"
+  # renovate: datasource=github-releases depName=mikefarah/yq
+  aqua:mikefarah/yq: "v4.54.1"
+context:
+  - path: CLAUDE.md
+    description: Repo conventions, cluster facts and operations notes (CPU/memory policy, muspelheim caution, Renovate blind spots)
+  - path: apps/CLAUDE.md
+    description: The ks.yaml + app/ two-layer convention every app follows
+    paths: ["apps/**"]

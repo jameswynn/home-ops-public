@@ -1,0 +1,26 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/kustomization
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - rbac.yaml
+  - daemonset.yaml
+  - prometheus-rules.yaml
+configMapGenerator:
+  - name: node-maintenance-gate
+    files:
+      - gate.sh
+    # gate.sh is Bash: every ${var} in it is a runtime expansion, not a Flux
+    # substitution token. Without this the cluster-wide postBuild.substituteFrom
+    # from flux/core.yaml walks the script and fails the whole Kustomization with
+    # "unable to parse variable name" on the first construct envsubst cannot
+    # read. Scoped to this generator so the DaemonSet, RBAC and PrometheusRule
+    # beside it keep normal substitution.
+    options:
+      annotations:
+        kustomize.toolkit.fluxcd.io/substitute: disabled
+namespace: kube-system
+generatorOptions:
+  disableNameSuffixHash: true
+  annotations:
+    kustomize.toolkit.fluxcd.io/substitute: disabled

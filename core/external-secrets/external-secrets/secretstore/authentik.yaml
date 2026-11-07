@@ -1,0 +1,18 @@
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: authentik-oauth
+spec:
+  provider:
+    webhook:
+      url: "http://authentik-server.authentik.svc/api/v3/providers/oauth2/?name={{ .remoteRef.key }}"
+      headers:
+        Content-Type: application/json
+        Authorization: Bearer {{ .auth.AUTHENTIK_BOOTSTRAP_TOKEN }}
+      result:
+        jsonPath: "$.results[0]"
+      secrets:
+        - name: auth
+          secretRef:
+            name: authentik-secrets
+            namespace: external-secrets

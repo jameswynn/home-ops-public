@@ -1,0 +1,33 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+# Router config backups (#2322). Each night is one ~90 KB export, kept
+# 30 days, so the quota is headroom, not sizing.
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: &bucket mikrotik-backup
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  quotas:
+    maxSize: 1Gi
+  globalAlias: *bucket
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+# No importKey: the operator mints the key into a Secret named after this
+# GarageKey (access-key-id, secret-access-key, endpoint, region). `write` covers
+# DeleteObject, which the 30-day retention sweep needs.
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: mikrotik-backup
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  bucketPermissions:
+    - bucketRef:
+        name: mikrotik-backup
+      read: true
+      write: true

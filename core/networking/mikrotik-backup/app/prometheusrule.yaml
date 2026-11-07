@@ -1,0 +1,21 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/prometheusrule_v1.json
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mikrotik-backup-rules
+spec:
+  groups:
+    - name: mikrotik-backup.rules
+      rules:
+        - alert: MikrotikBackupStale
+          # Nightly job; 36h allows one missed or retried run before paging.
+          expr: |
+            time() - kube_cronjob_status_last_successful_time{namespace="networking", cronjob="mikrotik-backup"} > 36 * 3600
+            or absent(kube_cronjob_status_last_successful_time{namespace="networking", cronjob="mikrotik-backup"})
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: No successful MikroTik config backup in over 36h.
+            description: Check `kubectl -n networking get jobs` and the fetch/upload container logs.

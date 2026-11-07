@@ -1,0 +1,76 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: ideon-namespace-policy
+  namespace: ideon
+spec:
+  endpointSelector: {}
+  ingress:
+    # Allow ingress from internal envoy-gateway in the networking namespace
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.networking.k8s.io/gateway-name: envoy-internal
+            # This label must exist on the namespace object itself
+            "k8s:io.kubernetes.pod.namespace": networking
+
+    # Allow intra-namespace traffic (pod-to-pod within ideon)
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": ideon
+
+  egress:
+    # Allow intra-namespace traffic
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": ideon
+
+    # Allow default postgres cluster
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": default
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # Allow DNS
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # # Allow internet egress
+    # - toEntities:
+    #     - world
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+# kopiur mover Jobs PATCH their results (kopia snapshot id, stats, timing)
+# back onto the Snapshot CR. Without this the backup still lands in kopia but
+# the CR stays id-less: no last-success metric (stale-backup alert), and
+# retention / snapshotRef restores have no kopia id. Scoped to kopiur pods
+# only; Cilium unions it with the namespace policy above.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kopiur-mover-apiserver
+  namespace: ideon
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: kopiur
+  egress:
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - protocol: TCP
+              port: "6443"

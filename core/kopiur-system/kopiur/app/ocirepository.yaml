@@ -1,0 +1,16 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kopiur
+spec:
+  interval: 1h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  # v1alpha1 operator with breaking CRD renames between minors: review every
+  # bump (Renovate PR) as risk/medium.
+  ref:
+    tag: 0.10.17
+  url: oci://ghcr.io/home-operations/charts/kopiur

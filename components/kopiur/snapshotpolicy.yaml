@@ -1,0 +1,50 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.home-operations.com/kopiur.home-operations.com/snapshotpolicy_v1alpha1.json
+apiVersion: kopiur.home-operations.com/v1alpha1
+kind: SnapshotPolicy
+metadata:
+  name: "${APP}"
+spec:
+  repository:
+    kind: ClusterRepository
+    name: nas
+  # Continue the VolSync (perfectra1n fork) lineage `<app>@<namespace>:/data`
+  # so history and retention carry over. kopiur's default hostname is already
+  # the namespace; username and path must be pinned.
+  identity:
+    username: "${APP}"
+  sources:
+    - pvc:
+        name: "${KOPIUR_CLAIM:=${APP}}"
+      sourcePathOverride: /data
+      # Read-write so the kubelet applies the mover's fsGroup (chgrp + g+rw) to
+      # the *staged* clone, letting the uid-1000 mover read apps whose files are
+      # 0600 under another uid (saam: 10001). A read-only mount skips that walk
+      # and the backup fails with permission denied. Only the throwaway staged
+      # PVC is rewritten; never the live volume. Safe ONLY with copyMethod
+      # Snapshot/Clone: Direct would chgrp the live volume. This is what VolSync
+      # did implicitly (it mounted its clone read-write).
+      readOnly: false
+  copyMethod: Snapshot
+  volumeSnapshotClassName: "${KOPIUR_SNAPSHOTCLASS:=longhorn-snapclass}"
+  compression:
+    compressor: zstd-fastest
+  upload:
+    maxParallelFileReads: 2
+  retention:
+    keepHourly: 24
+    keepDaily: 7
+  mover:
+    cache:
+      capacity: "${KOPIUR_CACHE_CAPACITY:=5Gi}"
+      mode: Persistent
+      storageClassName: "${KOPIUR_CACHE_STORAGECLASS:=local-path}"
+    podSecurityContext:
+      runAsUser: ${KOPIUR_PUID:=1000}
+      runAsGroup: ${KOPIUR_PGID:=1000}
+      fsGroup: ${KOPIUR_PGID:=1000}
+      # Skip the recursive walk when the staged volume's root is already 1000.
+      fsGroupChangePolicy: OnRootMismatch
+    securityContext:
+      runAsUser: ${KOPIUR_PUID:=1000}
+      runAsGroup: ${KOPIUR_PGID:=1000}

@@ -1,0 +1,21 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: opentelemetry-operator-apiserver
+  namespace: monitoring
+spec:
+  # Cilium does not match standard ipBlock rules against in-cluster entities by
+  # default. Use its API-server entity so Service translation remains covered.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/component: controller-manager
+      app.kubernetes.io/name: opentelemetry-operator
+  egress:
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - protocol: TCP
+              port: "6443"

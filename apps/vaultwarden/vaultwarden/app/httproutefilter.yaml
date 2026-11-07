@@ -1,0 +1,16 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.envoyproxy.io/httproutefilter_v1alpha1.json
+# Referenced by the `admin-block` HTTPRoute so /admin returns a plain 404 on the
+# public towonel gateway. Previously the route rule simply had no backendRefs,
+# which Envoy Gateway renders as a `direct_response` 500 — it blocked access, but
+# advertised a broken server on every probe.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: vaultwarden-admin-blocked
+spec:
+  directResponse:
+    statusCode: 404
+    body:
+      type: Inline
+      inline: "404 page not found"

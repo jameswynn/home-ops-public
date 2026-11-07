@@ -1,0 +1,59 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/external-secrets.io/externalsecret_v1.json
+# Credentials for the gotosocial role. basic-auth is the shape
+# DatabaseRole.passwordSecret reads; the app consumes the same Secret at
+# cutover (#2302 phase 4), so role and app can never drift.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: gotosocial-db
+spec:
+  secretStoreRef:
+    name: bitwarden-secrets-manager-sdk
+    kind: ClusterSecretStore
+  target:
+    name: gotosocial-db
+    deletionPolicy: Delete
+    template:
+      type: kubernetes.io/basic-auth
+      data:
+        username: gotosocial
+        password: "{{ .GTS_DB_PASSWORD }}"
+  refreshInterval: 15m
+  dataFrom:
+    - extract:
+        key: gotosocial
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/postgresql.cnpg.io/databaserole_v1.json
+# Replaces postgres-init. Owner of the gotosocial database; GtS runs its own
+# schema migrations as this role, so it needs ownership but nothing more.
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: gotosocial
+spec:
+  cluster:
+    name: gotosocial-postgres
+  name: gotosocial
+  login: true
+  superuser: false
+  createdb: false
+  createrole: false
+  bypassrls: false
+  passwordSecret:
+    name: gotosocial-db
+  databaseRoleReclaimPolicy: retain
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/postgresql.cnpg.io/database_v1.json
+# On PG15+ `public` is owned by pg_database_owner, so owning the database is
+# what grants GtS CREATE on public -- no extra GRANT needed.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: gotosocial
+spec:
+  cluster:
+    name: gotosocial-postgres
+  name: gotosocial
+  owner: gotosocial
+  databaseReclaimPolicy: retain
