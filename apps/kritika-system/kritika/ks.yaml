@@ -1,0 +1,69 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app kritika-database
+  namespace: &namespace kritika-system
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  # First bootstrap pulls the vectorchord operand and runs initdb.
+  timeout: 15m
+  dependsOn:
+    - name: cloudnative-pg
+      namespace: default
+  path: ./apps/kritika-system/kritika/database
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # kritika refuses to start without the database, its extensions and the
+  # kritika_app role; gate the app on the Cluster being Ready. `wait: true`
+  # alone passed while initdb was still running (kstatus has no CNPG rule, see
+  # onedr0p/home-ops#11787), so check the Ready condition explicitly.
+  wait: false
+  healthChecks:
+    - apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      name: kritika-postgres
+      namespace: kritika-system
+  healthCheckExprs:
+    - apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      current: status.conditions.exists(e, e.type == 'Ready' && e.status == 'True')
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app kritika
+  namespace: &namespace kritika-system
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 10m
+  dependsOn:
+    - name: kritika-database
+      namespace: *namespace
+  path: ./apps/kritika-system/kritika/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: kritika
+      namespace: *namespace

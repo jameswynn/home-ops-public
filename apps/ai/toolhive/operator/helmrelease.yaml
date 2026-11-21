@@ -1,0 +1,36 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: toolhive-operator
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: toolhive-operator
+  interval: 1h
+  install:
+    remediation:
+      retries: -1
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    operator:
+      # Live RSS sits at ~128Mi; chart lowered GOMEMLIMIT to 110MiB in 0.41.0
+      # but the observed footprint exceeds that, so we override both limits.
+      resources:
+        requests:
+          # CPU from live data (2026-08-26): p50 45m, p95 ~62m while managing
+          # the 10 MCP backends. Chart default is 10m — far below the repo's
+          # 25m floor and the alert threshold (CpuUsageFarExceedsRequest was
+          # firing at 5.6x). 75m sits on the coarse ladder above p95.
+          cpu: 75m
+          memory: 128Mi
+        limits:
+          # Chart default is cpu: 500m; kept deliberately (documented
+          # exception to the no-CPU-limit convention — the operator chart
+          # ships it and it bounds one controller reconciling 10 backends).
+          cpu: 500m
+          memory: 256Mi

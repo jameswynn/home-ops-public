@@ -1,0 +1,90 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/postgresql.cnpg.io/cluster_v1.json
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres
+  namespace: default
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.9-22
+  primaryUpdateStrategy: unsupervised
+  # Image bumps restart the primary last. `restart` (the default) recreates
+  # the primary pod in place: ~2 min of no writable endpoint on this cluster
+  # (2026-11-19). `switchover` promotes the most aligned replica first, so
+  # clients see a ~2-5 s reconnect, and the old primary restarts as a replica.
+  # Cost: the primary moves to whichever node hosts that replica; instances
+  # here are node-pinned local-path, so write latency follows the node's disk.
+  primaryUpdateMethod: switchover
+  nodeMaintenanceWindow:
+    inProgress: true
+    reusePVC: true
+  storage:
+    size: 20Gi
+    storageClass: local-path
+  enableSuperuserAccess: true
+  superuserSecret:
+    name: cloudnative-pg-secret
+  resources:
+    requests:
+      cpu: 50m
+      memory: 1500Mi
+      ephemeral-storage: 200Mi
+    limits:
+      # cpu: 1500m
+      memory: 3000Mi
+      ephemeral-storage: 200Mi
+  postgresql:
+    parameters:
+      max_connections: "600"
+      max_slot_wal_keep_size: 10GB
+      shared_buffers: 512MB
+
+  monitoring:
+    enablePodMonitor: true
+
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: postgres
+        # serverName: postgres
+
+  # backup:
+  #   retentionPolicy: 30d
+  #   barmanObjectStore: &barmanObjectStore
+  #     wal:
+  #       compression: bzip2
+  #       maxParallel: 8
+  #     data:
+  #       compression: bzip2
+  #     destinationPath: s3://postgresql/
+  #     endpointURL: https://${SECRET_MINIO_URL}:9443
+  #     serverName: postgres16-v2
+  #     s3Credentials:
+  #       accessKeyId:
+  #         name: postgres-minio
+  #         key: MINIO_ACCESS_KEY
+  #       secretAccessKey:
+  #         name: postgres-minio
+  #         key: MINIO_SECRET_KEY
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                  - amd64
+  # Note: previousCluster needs to be set to the name of the previous
+  # cluster when recovering from an existing cnpg cluster
+  # bootstrap:
+  #   recovery:
+  #     source: &previousCluster postgres16-v1
+  # Note: externalClusters is needed when recovering from an existing cnpg cluster
+  # externalClusters:
+  #   - name: *previousCluster
+  #     barmanObjectStore:
+  #       <<: *barmanObjectStore
+  #       serverName: *previousCluster

@@ -1,0 +1,63 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app forgejo
+  namespace: &namespace dev
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/dev/forgejo/app
+  components:
+    - ../../../../components/dragonfly
+    - ../../../../components/anubis
+    - ../../../../components/kopiur
+  postBuild:
+    substitute:
+      APP: *app
+      APP_NAMESPACE: *namespace
+      ANUBIS_TARGET: http://forgejo-http.dev.svc.cluster.local:3000
+      # Forgejo is the highest-traffic anubis target here; 256Mi is tight.
+      ANUBIS_MEM_LIMIT: 384Mi
+      ANUBIS_EPHEM_LIMIT: 200Mi
+      # Static PV pvc-data-forgejo (Retain); the component's PVC is
+      # create-only, so it never touches the existing claim. ~20 GiB used
+      # (packages 12G, attachments 3.8G, actions_log 3G, git 623M).
+      KOPIUR_CLAIM: data-forgejo
+      KOPIUR_CAPACITY: 40Gi
+      # Every 6h, not hourly: each run snapshots + clones ~20 GiB, and the
+      # first full run stalled muspelheim's etcd (2026-11-08).
+      KOPIUR_CRON: "H */6 * * *"
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app forgejo-runner
+  namespace: &namespace dev
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  dependsOn:
+    - name: forgejo
+  path: ./apps/dev/forgejo/runner
+  postBuild:
+    substitute:
+      APP: *app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

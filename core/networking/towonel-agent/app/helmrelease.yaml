@@ -1,0 +1,78 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: towonel-agent
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: towonel-agent
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    controllers:
+      main:
+        replicas: 2
+        annotations:
+          reloader.stakater.com/auto: "true"
+    agent:
+      logLevel: info
+      healthPort: 9090
+      # Public hostnames tunnelled out through the VPS hub, forwarded to the dedicated
+      # envoy-towonel gateway. Add more entries per migration wave.
+      services:
+        # proxy_protocol "v2" preserves the real client IP; envoy-towonel has a
+        # ClientTrafficPolicy with `proxyProtocol` to accept it (the field here is a
+        # string enum — only "none" or "v2" are valid).
+
+        # The apex needs its own entry: "*.${SECRET_ROOT_DOMAIN}" does NOT match the
+        # bare "${SECRET_ROOT_DOMAIN}". Without it the hub has no mapping for the apex
+        # SNI and closes the connection with no certificate (Cloudflare reports 525),
+        # which breaks the apex site, Matrix .well-known delegation and webfinger.
+        # envoy-towonel's hostname-less `https` listener accepts it and default-cert
+        # already carries a DNS:${SECRET_ROOT_DOMAIN} SAN.
+        - hostname: "${SECRET_ROOT_DOMAIN}"
+          origin: envoy-towonel.networking.svc.cluster.local:443
+          proxy_protocol: "v2"
+
+        - hostname: "*.${SECRET_ROOT_DOMAIN}"
+          origin: envoy-towonel.networking.svc.cluster.local:443
+          proxy_protocol: "v2"
+
+        # Non-wynning.tech apex: literal hostname (no SECRET_ROOT_DOMAIN). envoy-towonel has a
+        # dedicated sneaker.social listener + sneaker-cert.
+        - hostname: "sneaker.social"
+          origin: envoy-towonel.networking.svc.cluster.local:443
+          proxy_protocol: "v2"
+        - hostname: "*.sneaker.social"
+          origin: envoy-towonel.networking.svc.cluster.local:443
+          proxy_protocol: "v2"
+        - hostname: "jameswynn.com"
+          origin: envoy-towonel.networking.svc.cluster.local:443
+          proxy_protocol: "v2"
+        - hostname: "*.jameswynn.com"
+          origin: envoy-towonel.networking.svc.cluster.local:443
+          proxy_protocol: "v2"
+      inviteTokenSecret:
+        name: towonel-agent-secret
+        key: TOWONEL_INVITE_TOKEN
+    serviceMonitor:
+      main:
+        enabled: true
+        endpoints:
+          - port: metrics
+            interval: 1m
+            scrapeTimeout: 10s
+            path: /metrics
+    monitoring:
+      prometheusRule:
+        enabled: true
+      dashboards:
+        enabled: true

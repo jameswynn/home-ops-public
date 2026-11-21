@@ -1,0 +1,122 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app adguard-primary
+  namespace: &namespace default
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/default/adguard/primary
+  components:
+    - ../../../../components/kopiur
+  postBuild:
+    substitute:
+      APP: *app
+      KOPIUR_CLAIM: adguard-config
+      KOPIUR_CAPACITY: 1Gi
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # wait: true would also wait on the kopiur Restore, which stays Reconciling
+  # until a PVC claims it; gate on the HelmRelease only.
+  wait: false
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: *app
+      namespace: *namespace
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app adguard-secondary
+  namespace: &namespace default
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/default/adguard/secondary
+  components:
+    - ../../../../components/kopiur
+  postBuild:
+    substitute:
+      APP: *app
+      KOPIUR_CLAIM: adguard-secondary-config
+      KOPIUR_CAPACITY: 1Gi
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # wait: true would also wait on the kopiur Restore, which stays Reconciling
+  # until a PVC claims it; gate on the HelmRelease only.
+  wait: false
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: *app
+      namespace: *namespace
+---
+# adguard-code (code-server over the AdGuard config volume) disabled 2026-11-17:
+# 512Mi request on a cluster that cannot place its pods when one node drains,
+# for an editor that is used a few times a year. Uncomment to re-enable.
+# # yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+# apiVersion: kustomize.toolkit.fluxcd.io/v1
+# kind: Kustomization
+# metadata:
+#   name: &app adguard-code
+#   namespace: &namespace default
+# spec:
+#   targetNamespace: *namespace
+#   interval: 30m
+#   retryInterval: 1m
+#   timeout: 3m
+#   path: ./apps/default/adguard/code
+#   components:
+#     - ../../../../components/forward-auth
+#   postBuild:
+#     substitute:
+#       APP: *app
+#   prune: true
+#   sourceRef:
+#     kind: GitRepository
+#     name: flux-system
+#     namespace: flux-system
+#   wait: true
+#   healthChecks:
+#     - apiVersion: helm.toolkit.fluxcd.io/v2
+#       kind: HelmRelease
+#       name: *app
+#       namespace: *namespace
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app adguard-sync
+  namespace: &namespace default
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/default/adguard/sync
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: *app
+      namespace: *namespace

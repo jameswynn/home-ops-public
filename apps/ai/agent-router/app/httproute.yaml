@@ -1,0 +1,33 @@
+---
+# Public at agent-router.${SECRET_ROOT_DOMAIN} through towonel (Coraza WAF
+# applies to every towonel route), and on envoy-internal for LAN clients that
+# resolve the same name. agent-router's bearer key is the only access control;
+# envoypolicy.yaml rate-limits per client IP to slow key guessing.
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.networking.k8s.io/httproute_v1.json
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agent-router
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: "agent-router.${SECRET_ROOT_DOMAIN}"
+    # The route only matches /mcp, so gatus' default probe of / would 404. An
+    # unauthenticated GET /mcp gets 401 from the app: gateway -> pod, no secret.
+    gatus.home-operations.com/endpoint: |-
+      url: https://agent-router.${SECRET_ROOT_DOMAIN}/mcp
+      conditions: ["[STATUS] == 401"]
+spec:
+  parentRefs:
+    - name: envoy-towonel
+      namespace: networking
+    - name: envoy-internal
+      namespace: networking
+  hostnames:
+    - "agent-router.${SECRET_ROOT_DOMAIN}"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /mcp
+      backendRefs:
+        - name: agent-router
+          port: 8000

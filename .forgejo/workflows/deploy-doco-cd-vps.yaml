@@ -1,0 +1,79 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+# Keeps the VPS doco-cd controller at the version in git. doco-cd reconciles the
+# docker/vps stacks itself but never redeploys itself, so without this the running
+# controller drifts from .doco-cd/docker-compose.app.yaml (it sat on 0.94.0 while the
+# repo pinned 0.127.0). Runs docker/update-doco-cd.sh on the VPS over SSH.
+name: Deploy doco-cd (VPS)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docker/vps/.doco-cd/**
+      - docker/update-doco-cd.sh
+      - .forgejo/workflows/deploy-doco-cd-vps.yaml
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-doco-cd-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Pinned to the VPS's own runner (docker/vps/04-runner): the job reaches the host
+    # sshd at that stack's fixed bridge gateway, so nothing depends on public SSH, the
+    # tailnet, or OVH's missing hairpin NAT. The in-cluster runner also carries
+    # `ubuntu-latest`, hence a dedicated label.
+    runs-on: vps
+    timeout-minutes: 15
+    steps:
+      # Plain OpenSSH rather than appleboy/ssh-action: drone-ssh negotiates the
+      # ECDSA/RSA host key first and fails a pinned ED25519 fingerprint, and it
+      # downloads its binary from GitHub on every run.
+      - name: Update controller
+        env:
+          SSH_KEY: ${{ secrets.VPS_DEPLOY_SSH_KEY }}
+          # heimdall's /etc/ssh/ssh_host_ed25519_key.pub
+          # (SHA256:mmXYoXQ7jzR7NCuR8Gptujy6e3Lvhl2c+LxLqntxgK8)
+          KNOWN_HOST: >-
+            172.31.255.1 ssh-ed25519
+            AAAAC3NzaC1lZDI1NTE5AAAAIE8PrN1xWegGuBT+avGaqOsVAuIXZxU4rC+aOhgPJyNx
+        run: |
+          if ! command -v ssh >/dev/null; then
+            $(command -v sudo) apt-get update -qq
+            $(command -v sudo) apt-get install -y -qq openssh-client >/dev/null
+          fi
+          d="$(mktemp -d)"
+          trap 'rm -rf "$d"' EXIT
+          (umask 077 && printf '%s\n' "$SSH_KEY" > "$d/key")
+          printf '%s\n' "$KNOWN_HOST" > "$d/known_hosts"
+          # The key is restricted server-side to a forced command
+          # (update-doco-cd.sh vps), so no remote command is sent.
+          ssh -i "$d/key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o UserKnownHostsFile="$d/known_hosts" -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 -o ConnectTimeout=15 \
+            ubuntu@172.31.255.1
+
+      # Bounded so a notification can never hang or fail the deploy (ntfy timed
+      # out from vps-runner jobs until the 04-runner MTU fix). Plain curl with its own short timeout,
+      # not ntfy-action + timeout-minutes: when a step deadline expires, the
+      # runner fails the whole job even with continue-on-error (seen on this
+      # workflow and on publish.yaml).
+      - name: Notify
+        if: always()
+        env:
+          TOPIC: ${{ secrets.NTFY_TOPIC }}
+          STATUS: ${{ job.status }}
+          LOG_URL: https://forge.wynning.tech/${{ forgejo.repository }}/actions/${{ forgejo.run_id }}
+        run: |
+          if [ "$STATUS" = success ]; then
+            title="VPS doco-cd deploy succeeded" tags=partying_face
+          else
+            title="VPS doco-cd deploy failed" tags=warning
+          fi
+          curl -fsS -m 20 -o /dev/null \
+            -H "Title: $title" -H "Tags: $tags" -H "Priority: low" \
+            -H "Actions: view, Build Log, $LOG_URL, clear=true" \
+            -d "$STATUS" "https://ntfy.wynning.tech/$TOPIC" \
+            || echo "::warning::ntfy unreachable; notification skipped"

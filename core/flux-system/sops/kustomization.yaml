@@ -1,0 +1,9 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/kustomization
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# The single in-cluster copy of the SOPS age private key. kustomize-controller
+# reads it via --sops-age-secret (see flux-instance/app/helm-release.yaml); no
+# other namespace needs a copy (#2067).
+resources:
+  - secret.sops.yaml

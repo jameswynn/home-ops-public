@@ -1,0 +1,38 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app home-assistant
+  namespace: &namespace home
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/home/home-assistant/app
+  components:
+    - ../../../../components/forward-auth
+    - ../../../../components/kopiur
+  postBuild:
+    substitute:
+      # Names the kopiur objects/identity; forward-auth uses AUTH_ROUTE below.
+      APP: *app
+      KOPIUR_CLAIM: home-assistant-config
+      KOPIUR_CAPACITY: 30Gi
+      # .storage/auth, auth.session, core.config, http, … are 0600 root:1000;
+      # the clone's root is already gid 1000, so OnRootMismatch skips the g+rw
+      # walk and the mover can't read them. Always walks the staged clone only.
+      KOPIUR_FSGROUP_CHANGE_POLICY: Always
+      AUTH_ROUTE: home-assistant-code
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # healthChecks:
+  #   - apiVersion: helm.toolkit.fluxcd.io/v2
+  #     kind: HelmRelease
+  #     name: home-assistant
+  #     namespace: home
+  wait: false

@@ -1,0 +1,58 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app authentik
+  namespace: &namespace authentik
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/authentik/authentik/app
+  components:
+    - ../../../../components/kopiur
+  prune: true
+  postBuild:
+    substitute:
+      APP: *app
+      KOPIUR_CLAIM: authentik-resources
+      KOPIUR_CAPACITY: 1Gi
+      KOPIUR_ACCESSMODES: ReadWriteMany
+      # A Persistent local-path cache pins every mover to one node; when that
+      # node fills up (twice: muspelheim, then svartalfheim) every run wedges.
+      # Ephemeral: a fresh per-run cache, so the 512Mi mover goes wherever fits.
+      KOPIUR_CACHE_MODE: Ephemeral
+  # The authentik LimitRange (default-limit-ranges) defaults containers to
+  # memory 128Mi; kopia movers peak at ~270-380Mi, so set the mover's memory
+  # explicitly (request == limit). Targeted by kind: patches apply before
+  # ${APP} substitution, and this ks has exactly one of each.
+  patches:
+    - target:
+        group: kopiur.home-operations.com
+        kind: SnapshotPolicy
+      patch: |
+        - op: add
+          path: /spec/mover/resources
+          value:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 512Mi
+    - target:
+        group: kopiur.home-operations.com
+        kind: Restore
+      patch: |
+        - op: add
+          path: /spec/mover/resources
+          value:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 512Mi
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

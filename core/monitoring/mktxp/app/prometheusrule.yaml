@@ -1,0 +1,75 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/prometheusrule_v1.json
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mktxp-rules
+spec:
+  groups:
+    - name: mikrotik.rules
+      rules:
+        - alert: MikrotikExporterDown
+          expr: up{job="mktxp"} == 0 or absent(up{job="mktxp"})
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: mktxp cannot be scraped; router metrics are blind.
+
+        - alert: MikrotikRouterUnreachable
+          # mktxp serves metrics even when its router login fails; system
+          # metrics vanishing is the signal that the API session is gone.
+          expr: up{job="mktxp"} == 1 unless on() mktxp_system_uptime
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: mktxp is up but gets no data from the router (API login or reachability).
+
+        - alert: MikrotikHighCpu
+          expr: mktxp_system_cpu_load > 80
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.routerboard_name }} CPU at {{ $value }}% for 15m."
+
+        - alert: MikrotikHighTemperature
+          expr: mktxp_system_routerboard_temperature > 70
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.routerboard_name }} board temperature {{ $value }}°C."
+
+        - alert: MikrotikLowMemory
+          expr: mktxp_system_free_memory / mktxp_system_total_memory < 0.10
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.routerboard_name }} has under 10% free memory."
+
+        - alert: MikrotikWanDown
+          # interface_name_format=combined appends " (comment)" if one is set.
+          expr: mktxp_interface_running{name=~"ether1( .*)?"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: WAN interface ether1 is not running.
+
+        - alert: MikrotikRebooted
+          expr: mktxp_system_uptime < 900
+          labels:
+            severity: info
+          annotations:
+            summary: "{{ $labels.routerboard_name }} rebooted {{ $value | humanizeDuration }} ago."
+
+        - alert: MikrotikBgpPeerDown
+          expr: mktxp_bgp_established == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "BGP session {{ $labels.name }} is not established; that node advertises no LB IPs."

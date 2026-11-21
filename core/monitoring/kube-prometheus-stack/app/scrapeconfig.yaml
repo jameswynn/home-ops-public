@@ -1,0 +1,65 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/scrapeconfig_v1alpha1.json
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: node-exporter
+spec:
+  staticConfigs:
+    - targets:
+        - ${SECRET_NAS_URL}:9100
+  metricsPath: /metrics
+  relabelings:
+    - action: replace
+      targetLabel: node
+      replacement: nas
+    - action: replace
+      targetLabel: job
+      replacement: node-exporter
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/scrapeconfig_v1alpha1.json
+# Garage S3 on the NAS (docker/nas/garage): Prometheus metrics on the admin API port.
+# No auth — garage.toml leaves admin.metrics_token unset.
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: garage-nas
+spec:
+  staticConfigs:
+    - targets:
+        - ${SECRET_NAS_URL}:3903
+  metricsPath: /metrics
+  relabelings:
+    - action: replace
+      targetLabel: node
+      replacement: nas
+    - action: replace
+      targetLabel: job
+      replacement: garage
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/scrapeconfig_v1alpha1.json
+# zot registry on the NAS (docker/nas/zot). /metrics needs auth; the `metrics` user
+# is allowed only that (accessControl.metrics), no repository writes.
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: zot-nas
+spec:
+  staticConfigs:
+    - targets:
+        - ${SECRET_NAS_URL}:5050
+  metricsPath: /metrics
+  basicAuth:
+    username:
+      name: zot-metrics
+      key: username
+    password:
+      name: zot-metrics
+      key: password
+  relabelings:
+    - action: replace
+      targetLabel: node
+      replacement: nas
+    - action: replace
+      targetLabel: job
+      replacement: zot

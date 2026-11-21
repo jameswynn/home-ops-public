@@ -1,0 +1,195 @@
+---
+# Host config for the off-cluster `vps` group (heimdall): admin SSH access and
+# memory guardrails.
+#
+# Deliberately small. prepare.yaml is k3s node prep (multipathd off, CNI symlinks,
+# dm_crypt, k3s packages) and must never run here.
+#
+# SSH: until 2026-11-10 the only interactive path to heimdall was Tailscale SSH
+# and the only authorized_keys entry was the doco-cd deploy key
+# (command=/from=/restrict). When the tailnet node key expired, every admin path
+# went with it and recovery needed the OVH KVM. Not `exclusive`: the restricted
+# deploy key (docker/vps/README.md) is managed by hand and must survive this play.
+#
+# Memory: 8 GB, no swap, and (until #2539) one unlimited container. The
+# 2026-11-05..10 OOM storm killed whichever daemon had the biggest RSS. Three
+# layers, cheapest first:
+#   - mem_limit on dind (docker/vps/04-runner) — the actual fix, in compose.
+#   - 2 GB zram swap: compressed in RAM, never touches the OVH virtio disk (which
+#     is why not a swapfile and not zswap). Cold pages from the long-running
+#     daemons go there; a spike becomes slowness instead of a kill, so the box
+#     keeps reporting long enough to be alerted on.
+#   - systemd-oomd: kills by cgroup memory *pressure* before the kernel's
+#     RSS-based pick, so under contention the busiest cgroup (a docker scope)
+#     goes, not tailscaled.
+# prepare.yaml disables swap on the k3s nodes because kubelet requires it; that
+# is a kubelet constraint, not a policy, and does not apply here.
+#
+# First run, before the key exists on the host, goes over Tailscale SSH:
+#   ansible-playbook playbooks/vps.yaml -e ansible_host=heimdall -e ansible_port=22
+# After that the inventory's public IP:42222 works directly (`task ansible:vps`).
+- hosts: vps
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Admin SSH | Add public_ssh_keys to {{ ansible_user }}
+      ansible.posix.authorized_key:
+        user: "{{ ansible_user }}"
+        state: present
+        key: "{{ item }}"
+      loop: "{{ public_ssh_keys | default([]) }}"
+
+    # Identified by its restrictions, not its comment or key material: both change
+    # on rotation, the options are what the README says to keep. Must be an active
+    # (uncommented) line starting with exactly those options.
+    - name: Admin SSH | Restricted deploy key is still present
+      ansible.builtin.command:
+        cmd: >-
+          grep -cE '^command="/home/{{ ansible_user }}/home-ops/docker/update-doco-cd.sh vps",from="172\.31\.255\.0/24",restrict ssh-'
+          /home/{{ ansible_user }}/.ssh/authorized_keys
+      register: deploy_key
+      changed_when: false
+      failed_when: deploy_key.stdout | int != 1
+
+    # The OVH image is linux-image-virtual, which ships without zram.ko — it is in
+    # linux-modules-extra, and there is no -virtual metapackage for the extras on
+    # this release, only the per-kernel one. So it tracks the RUNNING kernel: after
+    # a kernel upgrade + reboot zramswap fails at boot (no module) until this play
+    # is re-run, which costs nothing but the cushion. Re-run `task ansible:vps`
+    # after kernel reboots on heimdall.
+    - name: Memory | kernel facts
+      ansible.builtin.setup:
+        gather_subset: ["!all", "!min", "kernel"]
+
+    - name: Memory | zram kernel module, zram-tools, systemd-oomd
+      become: true
+      ansible.builtin.apt:
+        name:
+          - "linux-modules-extra-{{ ansible_kernel }}"
+          - zram-tools
+          # separate package on Ubuntu server; not part of systemd itself
+          - systemd-oomd
+        state: present
+        update_cache: true
+        cache_valid_time: 86400
+
+    - name: Memory | zramswap config (2 GiB zstd, priority 100)
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/default/zramswap
+        mode: "0644"
+        content: |
+          # Managed by ansible/playbooks/vps.yaml
+          ALGO=zstd
+          SIZE=2048
+          PRIORITY=100
+      notify: Restart zramswap
+
+    - name: Memory | zramswap enabled
+      become: true
+      ansible.builtin.systemd:
+        name: zramswap
+        enabled: true
+        state: started
+
+    # swappiness=100: zram is RAM, paging to it is cheaper than dropping page
+    # cache, so treat anon and file pages alike. page-cluster=0: no readahead on
+    # a device with no seek cost.
+    - name: Memory | sysctls for zram
+      become: true
+      ansible.posix.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/90-zram.conf
+        reload: true
+      loop:
+        - { name: vm.swappiness, value: "100" }
+        - { name: vm.page-cluster, value: "0" }
+
+    - name: Memory | systemd drop-in directories
+      become: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /etc/systemd/oomd.conf.d
+        - /etc/systemd/system/system.slice.d
+        - /etc/systemd/system/tailscaled.service.d
+        - /etc/systemd/system/ssh.service.d
+        - /etc/systemd/system/docker.service.d
+        - /etc/systemd/system/containerd.service.d
+
+    - name: Memory | systemd-oomd config
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/oomd.conf.d/10-vps.conf
+        mode: "0644"
+        content: |
+          # Managed by ansible/playbooks/vps.yaml
+          [OOM]
+          DefaultMemoryPressureDurationSec=20s
+      notify: Restart systemd-oomd
+
+    # oomd only acts on slices that opt in. Docker (systemd cgroup driver) puts
+    # every container in a docker-<id>.scope under system.slice, so opting in
+    # system.slice is what makes a container the kill candidate. 60% pressure for
+    # 20s is "something is thrashing", well before the kernel OOM killer.
+    - name: Memory | system.slice opts in to oomd pressure kills
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/system.slice.d/10-oomd.conf
+        mode: "0644"
+        content: |
+          # Managed by ansible/playbooks/vps.yaml
+          [Slice]
+          ManagedOOMMemoryPressure=kill
+          ManagedOOMMemoryPressureLimit=60%
+      notify: Reload systemd
+
+    # Opting in system.slice makes EVERY child eligible, chosen by reclaim
+    # activity — tailscaled and sshd included, which would recreate the exact
+    # failure this is for. `omit` removes them from the candidate list.
+    # docker/containerd are omitted because killing dockerd takes every
+    # container down at once (edge included); the per-container docker-*.scopes
+    # stay eligible, which is where the pressure actually comes from.
+    - name: Memory | critical services omitted from oomd
+      become: true
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ item }}.d/10-oomd.conf"
+        mode: "0644"
+        content: |
+          # Managed by ansible/playbooks/vps.yaml
+          [Service]
+          ManagedOOMPreference=omit
+      loop:
+        - tailscaled.service
+        - ssh.service
+        - docker.service
+        - containerd.service
+      notify: Reload systemd
+
+    - name: Memory | systemd-oomd enabled
+      become: true
+      ansible.builtin.systemd:
+        name: systemd-oomd
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Restart zramswap
+      become: true
+      ansible.builtin.systemd:
+        name: zramswap
+        state: restarted
+
+    - name: Reload systemd
+      become: true
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart systemd-oomd
+      become: true
+      ansible.builtin.systemd:
+        name: systemd-oomd
+        state: restarted

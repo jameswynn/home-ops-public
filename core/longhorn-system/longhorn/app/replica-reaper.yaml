@@ -1,0 +1,141 @@
+---
+# Reaps Longhorn replicas that have exhausted their rebuild retries.
+#
+# Longhorn gives a failed replica five rebuild attempts (replica-replenishment
+# plus spec.rebuildRetryCount) and then leaves it in place forever: the volume
+# will not schedule a replacement while the dead replica still counts toward
+# numberOfReplicas, and in the worst shape - currentState running, healthyAt
+# never set - it also squats one of the node's rebuild slots
+# (concurrent-replica-rebuild-per-node-limit is 1 here), so nothing else on
+# that node can rebuild either. Two consequences seen 2026-11-14/16:
+#   - 8 volumes stuck degraded with two healthy copies and a dead third;
+#   - node-maintenance-gate blocked for an entire 02:00-05:00 window because
+#     one such replica reported "is rebuilding" for 142 consecutive passes,
+#     so no node rebooted.
+# Longhorn's documented remedy is to delete the replica CR; the volume then
+# schedules a fresh one. This job does exactly that, under two guards:
+#   1. only replicas with rebuildRetryCount >= 5 that have never been healthy;
+#   2. only when the owning volume already has >= 1 running, healthy replica
+#      (so this never touches a volume's last copy - that case is for a human).
+# Every deletion is posted to the same ntfy topic Alertmanager uses, so the
+# fix is visible even though it will usually pre-empt
+# LonghornReplicaRebuildSlotStuck (45m `for`).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: longhorn-replica-reaper
+  namespace: longhorn-system
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: longhorn-replica-reaper
+  namespace: longhorn-system
+rules:
+  - apiGroups: ["longhorn.io"]
+    resources: ["replicas"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["longhorn.io"]
+    resources: ["volumes", "engines"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: longhorn-replica-reaper
+  namespace: longhorn-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: longhorn-replica-reaper
+subjects:
+  - kind: ServiceAccount
+    name: longhorn-replica-reaper
+    namespace: longhorn-system
+---
+# Same Bitwarden item as monitoring/ntfy-alertmanager; only the token is used.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: longhorn-replica-reaper-ntfy
+  namespace: longhorn-system
+spec:
+  secretStoreRef:
+    name: bitwarden-secrets-manager-sdk
+    kind: ClusterSecretStore
+  refreshInterval: 1h
+  target:
+    deletionPolicy: Delete
+    template:
+      type: Opaque
+      data:
+        NTFY_URL: https://ntfy.${SECRET_ROOT_DOMAIN}/prometheus
+        NTFY_TOKEN: "{{ .NTFY_ALERTMANAGER_TOKEN }}"
+  dataFrom:
+    - extract:
+        key: ntfy-alertmanager
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: longhorn-replica-reaper
+  namespace: longhorn-system
+spec:
+  # Every 15m: well under LonghornReplicaRebuildSlotStuck's 45m, and short
+  # enough that a zombie never holds a slot through a kured window.
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: longhorn-replica-reaper
+        spec:
+          serviceAccountName: longhorn-replica-reaper
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: reaper
+              # Same image as node-maintenance-gate: kubectl + jq + bash + curl.
+              image: docker.io/alpine/k8s:1.37.2@sha256:7a82aeefea3d554a43a8676b137f2b88bae6c1fe11c13862b191b3a086cc28c0
+              command: ["/bin/bash", "/opt/reaper/reap.sh"]
+              envFrom:
+                - secretRef:
+                    name: longhorn-replica-reaper-ntfy
+              env:
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  memory: 64Mi
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/reaper
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: script
+              configMap:
+                name: longhorn-replica-reaper
+            - name: tmp
+              emptyDir: {}

@@ -1,0 +1,185 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app couchdb
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: *app
+  values:
+    controllers:
+      couchdb:
+        # One CouchDB on one RWO volume: never two pods on it at once.
+        strategy: Recreate
+        annotations:
+          reloader.stakater.com/auto: "true"
+
+        pod:
+          securityContext:
+            # The image's own couchdb user. Starting non-root makes the
+            # entrypoint skip its chown/gosu dance; the volume is made
+            # writable by fsGroup instead.
+            runAsUser: 5984
+            runAsGroup: 5984
+            runAsNonRoot: true
+            fsGroup: 5984
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+
+        containers:
+          app:
+            image:
+              repository: docker.io/library/couchdb
+              tag: 3.5.3@sha256:907eab5b7e55ab7cfd241d39b90b2a335ea40bef82acee5a37388c08bf201dda
+            env:
+              TZ: ${CLUSTER_TZ}
+            envFrom:
+              # COUCHDB_USER / COUCHDB_PASSWORD: the entrypoint writes these to
+              # local.d/docker.ini (an emptyDir), so the admin is re-applied
+              # from the secret on every start.
+              - secretRef:
+                  name: *app
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            # require_valid_user puts every endpoint, /_up included, behind
+            # auth, so an httpGet probe only ever sees 401. Startup and
+            # readiness check /_up with the admin credentials (already in the
+            # container env); liveness only needs the listener.
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: &port 5984
+                  periodSeconds: 30
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - /bin/sh
+                      - -c
+                      - curl -fsS -o /dev/null -u "$COUCHDB_USER:$COUCHDB_PASSWORD" http://127.0.0.1:5984/_up
+                  timeoutSeconds: 3
+                  periodSeconds: 10
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - /bin/sh
+                      - -c
+                      - curl -fsS -o /dev/null -u "$COUCHDB_USER:$COUCHDB_PASSWORD" http://127.0.0.1:5984/_up
+                  timeoutSeconds: 3
+                  periodSeconds: 5
+                  failureThreshold: 30
+            # CPU: request floor. Memory from 14d of Prometheus data: p95 148Mi,
+            # peak 177Mi. No CPU limit, per cluster convention.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 256Mi
+                ephemeral-storage: 50Mi
+              limits:
+                memory: 512Mi
+                ephemeral-storage: 200Mi
+
+          # Idempotent bootstrap (system DBs, `okb` database, `obsidian` user,
+          # _security), re-run on every pod start so a rotated
+          # OKB_COUCHDB_PASSWORD takes effect. Then idles: app-template has no
+          # run-once sidecar, and a Job would be immutable under Flux.
+          setup:
+            image:
+              repository: docker.io/curlimages/curl
+              tag: 8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
+            command:
+              - /bin/sh
+              - -c
+              - /scripts/setup.sh && exec sleep infinity
+            env:
+              COUCHDB_URL: http://127.0.0.1:5984
+              OKB_DB: okb
+              OKB_USER: obsidian
+            envFrom:
+              - secretRef:
+                  name: *app
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            resources:
+              requests:
+                cpu: 5m
+              limits:
+                memory: 32Mi
+
+    service:
+      app:
+        controller: couchdb
+        ports:
+          http:
+            port: *port
+
+    route:
+      app:
+        annotations:
+          internal.wynning.tech/hostname: &host "okb.${SECRET_INTERNAL_DOMAIN}"
+        hostnames:
+          - *host
+        # envoy-internal only: LAN and WireGuard clients. Keep in step with
+        # ../../netpols.yaml.
+        parentRefs:
+          - name: envoy-internal
+            namespace: networking
+
+    persistence:
+      data:
+        existingClaim: *app
+        advancedMounts:
+          couchdb:
+            app:
+              - path: /opt/couchdb/data
+      config:
+        type: configMap
+        name: couchdb-config
+        defaultMode: 0555
+        advancedMounts:
+          couchdb:
+            app:
+              - path: /opt/couchdb/etc/default.d/90-okb.ini
+                subPath: okb.ini
+                readOnly: true
+            setup:
+              - path: /scripts/setup.sh
+                subPath: setup.sh
+                readOnly: true
+      # The entrypoint writes the admin here, and CouchDB persists runtime
+      # config changes (e.g. the hashed admin password) to it.
+      local-ini:
+        type: emptyDir
+        sizeLimit: 1Mi
+        advancedMounts:
+          couchdb:
+            app:
+              - path: /opt/couchdb/etc/local.d
+      tmp:
+        type: emptyDir
+        sizeLimit: 64Mi
+        advancedMounts:
+          couchdb:
+            app:
+              - path: /tmp

@@ -1,0 +1,173 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+#
+# CouchDB ⇄ /data/vault ⇄ forge.wynning.tech/james/personal-okb
+#
+#   bridge    livesync-bridge: decrypts the LiveSync database into a plain
+#             working tree and pushes local file changes back into CouchDB
+#   git-sync  commits that tree once it has been quiet for 5 minutes, rebases
+#             onto the remote and pushes; pulls every 5 minutes, and the
+#             bridge carries pulled changes into CouchDB. The only git writer.
+#
+# First boot: the git-init initContainer clones the repo into the empty
+# volume, so the working tree starts out equal to git HEAD.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app okb-bridge
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: *app
+  values:
+    defaultPodOptions:
+      imagePullSecrets:
+        - name: forge-wynning-tech-creds
+
+    controllers:
+      okb-bridge:
+        # Single writer to a single RWO volume and a single git branch.
+        replicas: 1
+        strategy: Recreate
+        annotations:
+          reloader.stakater.com/auto: "true"
+
+        pod:
+          securityContext:
+            # Both containers write the same tree; same UID keeps file
+            # ownership uniform (the bridge image runs as 65534).
+            runAsUser: 65534
+            runAsGroup: 65534
+            runAsNonRoot: true
+            fsGroup: 65534
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+
+        initContainers:
+          git-init:
+            image: &gitImage
+              repository: docker.io/alpine/git
+              tag: v2.54.1@sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a
+            command: [/bin/sh, /scripts/git-sync.sh, init]
+            env: &gitEnv
+              GIT_URL: https://forge.wynning.tech/james/personal-okb.git
+              GIT_BRANCH: main
+              FORGEJO_USER: james
+              FORGEJO_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: FORGEJO_TOKEN
+              VAULT: /data/vault
+              HOME: /tmp/home
+            securityContext: &securityContext
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            resources: &gitResources
+              requests:
+                cpu: 10m
+              limits:
+                memory: 256Mi
+
+        containers:
+          bridge:
+            image:
+              # Built in forge.wynning.tech/james/containers (apps/livesync-bridge).
+              # Upstream has no releases: the tag is the upstream commit.
+              repository: forge.wynning.tech/james/livesync-bridge
+              tag: 1c252305bbddcacd200b8560d3bb786afe0906e9
+            env:
+              TZ: ${CLUSTER_TZ}
+              LSB_CONFIG: /config/config.json
+              LSB_HEALTH_FILE: /tmp/lsb-health.json
+            securityContext: *securityContext
+            probes:
+              # The bridge serves nothing; it rewrites a heartbeat file every
+              # 10s, and a wedged event loop stops refreshing it.
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - /bin/sh
+                      - -c
+                      - test -n "$(find /tmp/lsb-health.json -mmin -2 2>/dev/null)"
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+                  failureThreshold: 3
+              readiness:
+                enabled: false
+              startup:
+                enabled: false
+            # Memory from 14d of Prometheus data: p95 86Mi, peak 144Mi.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 128Mi
+              limits:
+                memory: 256Mi
+
+          git-sync:
+            image: *gitImage
+            command: [/bin/sh, /scripts/git-sync.sh, sync]
+            env:
+              <<: *gitEnv
+              QUIET_MINUTES: "5"
+              PULL_SECONDS: "300"
+            securityContext: *securityContext
+            probes:
+              liveness:
+                enabled: false
+              readiness:
+                enabled: false
+              startup:
+                enabled: false
+            resources: *gitResources
+
+    persistence:
+      data:
+        existingClaim: *app
+        advancedMounts:
+          okb-bridge:
+            git-init:
+              - path: /data
+            git-sync:
+              - path: /data
+            bridge:
+              - path: /data
+              # CouchDB resume checkpoints and known-file state. Losing it
+              # forces a full rescan, so it lives on the volume.
+              - path: /deno-dir/location_data
+                subPath: bridge-state
+      config:
+        type: secret
+        name: *app
+        advancedMounts:
+          okb-bridge:
+            bridge:
+              - path: /config/config.json
+                subPath: config.json
+                readOnly: true
+      scripts:
+        type: configMap
+        name: okb-bridge-scripts
+        defaultMode: 0555
+        advancedMounts:
+          okb-bridge:
+            git-init:
+              - path: /scripts
+                readOnly: true
+            git-sync:
+              - path: /scripts
+                readOnly: true
+      tmp:
+        type: emptyDir
+        sizeLimit: 64Mi
+        globalMounts:
+          - path: /tmp

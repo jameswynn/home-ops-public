@@ -1,0 +1,46 @@
+# ---
+# # yaml-language-server: $schema=https://datreeio.github.io/CRDs-catalog/cilium.io/ciliumexternalworkload_v2.json
+# apiVersion: "cilium.io/v2"
+# kind: CiliumExternalWorkload
+# metadata:
+#   name: "network-switch"
+#   labels:
+#     entity: network-switch
+#     location: rack
+# spec:
+#   ipv4-alloc-cidr: "192.168.88.2/32" # The external IP
+# ---
+# # yaml-language-server: $schema=https://datreeio.github.io/CRDs-catalog/cilium.io/ciliumexternalworkload_v2.json
+# apiVersion: "cilium.io/v2"
+# kind: CiliumExternalWorkload
+# metadata:
+#   name: "uac-ap-pro"
+#   labels:
+#     entity: uac-ap-pro
+#     location: rack
+# spec:
+#   ipv4-alloc-cidr: "192.168.88.3/32" # The external IP
+# ---
+# apiVersion: "cilium.io/v2"
+# kind: CiliumNetworkPolicy
+# metadata:
+#   name: "allow-to-network-switch"
+# spec:
+#   endpointSelector:
+#     matchLabels:
+#       name: unifi
+#   egress:
+#   - toEndpoints:
+#     - matchLabels:
+#         entity: uac-ap-pro # Matches the label in CiliumExternalWorkload
+# ---
+# # yaml-language-server: $schema=https://k8s-schemas.m00nlit.dev/cilium.io/ciliumclusterwidenetworkpolicy_v2.json
+# apiVersion: "cilium.io/v2"
+# kind: CiliumClusterwideNetworkPolicy
+# metadata:
+#   name: "uac-ap-pro"
+# spec:
+#   endpointSelector: {} # Applies to all managed endpoints
+#   egress:
+#   - toCIDR:
+#     - 192.168.88.3/32

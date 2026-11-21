@@ -1,0 +1,34 @@
+---
+# Replaces (no mergeType) the gateway-wide policy for this route only. That
+# policy retries on upstream reset; a replayed tools/call would deliver the same
+# command to Home Assistant twice, and agent-router's spec rules out retries.
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.envoyproxy.io/backendtrafficpolicy_v1alpha1.json
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: agent-router
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agent-router
+  retry:
+    numRetries: 0
+  # The route is public and the bearer key is the only control: cap each client
+  # IP (real IP survives towonel via proxy protocol + clientIPDetection). A
+  # person driving an MCP client stays far below this; key guessing does not.
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - clientSelectors:
+            - sourceCIDR:
+                type: Distinct
+                value: 0.0.0.0/0
+          limit:
+            requests: 60
+            unit: Minute
+  timeout:
+    http:
+      # Above the longest backend timeout agent-router allows per agent (30s here).
+      requestTimeout: 60s

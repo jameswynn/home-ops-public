@@ -1,0 +1,231 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# Forgejo Actions runner — CI executor for forge.wynning.tech. Ported/adapted from
+# eleboucher/homelab docker/vps/07-runner. A privileged Docker-in-Docker sidecar is the
+# job container engine; the runner daemon connects to Forgejo with a persistent
+# UUID+token credential pair (shown once when you create the runner in Forgejo's runner
+# settings — NOT a short-lived registration token). Both are stored in Bitwarden Secrets
+# Manager and injected by doco-cd (see ../.doco-cd.yaml).
+#
+# This stack deliberately does NOT join the shared `edge` network: the dind daemon
+# exposes an unauthenticated, root-equivalent API (tcp 2375, --tls=false), so it must
+# stay on this project's private bridge, isolated from the public-facing edge proxy.
+# The two services reach each other by name over Compose's implicit default network.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  forgejo-runner-dind:
+    # renovate: datasource=docker depName=docker
+    image: docker.io/library/docker:29-dind
+    container_name: forgejo-runner-dind
+    restart: unless-stopped
+    # Compose stops dependents first, so the runner has already drained (or
+    # hit its shutdown_timeout) by the time this gets SIGTERM; the grace here
+    # only has to cover dockerd's own teardown of whatever is left.
+    stop_grace_period: 2m
+    privileged: true
+    # Every job container runs inside THIS cgroup, so this is the memory cap for
+    # all CI work on the box. It was unbounded: the only unlimited container on an
+    # 8 GB host with no swap, and the one that OOM-stormed 2026-11-05..10 while the
+    # kernel killed tailscaled/caddy by RSS instead. 4g matches the in-cluster
+    # runner's dind. memswap == mem so a runaway job cannot spill into the host's
+    # zram (ansible/playbooks/vps.yaml) either; a job that needs more than 4 GB
+    # is the thing that should fail.
+    mem_limit: 4g
+    memswap_limit: 4g
+    command:
+      - dockerd
+      - -H
+      - tcp://0.0.0.0:2375
+      - --tls=false
+      # MTU 1280 for every network dind creates, matching tailscale0 (see the
+      # network note at the bottom). --mtu covers dind's default bridge only; act
+      # puts each job on its own user-defined WORKFLOW-* network, which needs the
+      # default-network-opt.
+      - --mtu=1280
+      - --default-network-opt=bridge=com.docker.network.driver.mtu=1280
+      # act gives every job its own WORKFLOW-* network and only removes it on a
+      # clean exit; a killed job (OOM, timeout, daemon restart) leaks one. dockerd's
+      # default pool is ~15 /16s under 172.17.0.0/12, so a short run of leaks ended
+      # in "all predefined address pools have been fully subnetted" and every new
+      # job died before checkout (2026-11-10). 10.200.0.0/16 carved into /24s
+      # gives 256 networks; it collides with nothing reachable from a job (this
+      # project's 172.31.255.0/24, the LAN 10.11/10.1, tailnet 100.64/10).
+      - --default-address-pool
+      - base=10.200.0.0/16,size=24
+    volumes:
+      - dind-data:/var/lib/docker
+      # BuildKit garbage-collection policy (10 GB cap). Without it dockerd never
+      # prunes build cache: the in-cluster runner hit 122 GB of dead cache this
+      # way (home-ops #2515). dockerd reads this at startup only. The gc block is
+      # daemon.json-only, so it cannot move into `command` above.
+      - ./daemon.json:/etc/docker/daemon.json:ro
+    logging: *default-logging
+
+  # Image GC. The gc policy bounds build cache; images pulled or built by jobs
+  # sit in dind's containerd store and nothing ages them out. Docker has no
+  # last-used time for images and `image prune --filter until=` keys on CREATED
+  # time, which would evict the long-lived upstream job image between runs, so
+  # the 6-hourly pass drops only dangling images, exited job containers older
+  # than 6h (act leaves FORGEJO-ACTIONS-TASK-* behind when a job dies mid-run —
+  # 19 held 33 GB here on 2026-11-10, 23 more the next day; runner timeout is
+  # 3h), stopped buildx builders (setup-buildx-action's docker-container driver
+  # leaves one `buildx_buildkit_builder-<uuid>0` per killed job, each with a
+  # cache volume that `docker builder prune` cannot see — 11 of them, 15 GB,
+  # 2026-11-11), unused volumes, and old default-builder cache. The full
+  # `image prune -a` runs on the first pass of each Sunday (wall clock, so a
+  # container restart cannot defer it). Same private bridge as the runner;
+  # dind's API is unauthenticated, which is exactly why nothing else may join it.
+  forgejo-runner-prune:
+    # renovate: datasource=docker depName=docker
+    image: docker.io/library/docker:29-cli
+    container_name: forgejo-runner-prune
+    restart: unless-stopped
+    depends_on:
+      forgejo-runner-dind:
+        condition: service_started
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      DOCKER_HOST: tcp://forgejo-runner-dind:2375
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        until docker info >/dev/null 2>&1; do sleep 10; done
+        last_full=""
+        while true; do
+          sleep 21600
+          docker image prune -f
+          docker container prune -f --filter until=6h
+          docker ps -aq --filter status=exited --filter name=buildx_buildkit_ | xargs -r docker rm
+          docker volume prune -af
+          docker builder prune -af --filter until=168h
+          today=$$(date +%Y-%m-%d)
+          if [ "$$(date +%u)" = 7 ] && [ "$$today" != "$$last_full" ]; then
+            docker image prune -af && last_full=$$today
+          fi
+          docker system df
+        done
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    logging: *default-logging
+
+  forgejo-runner:
+    # renovate: datasource=docker depName=data.forgejo.org/forgejo/runner
+    image: data.forgejo.org/forgejo/runner:13.2.2
+    container_name: forgejo-runner
+    restart: unless-stopped
+    # Must exceed runner.shutdown_timeout below, or Docker SIGKILLs the runner
+    # mid-drain and the job is lost anyway.
+    stop_grace_period: 31m
+    depends_on:
+      forgejo-runner-dind:
+        condition: service_started
+    environment:
+      DOCKER_HOST: tcp://forgejo-runner-dind:2375
+      FORGEJO_RUNNER_UUID: ${FORGEJO_RUNNER_UUID}
+      FORGEJO_RUNNER_TOKEN: ${FORGEJO_RUNNER_TOKEN}
+    # forge.wynning.tech is migrated to towonel and resolves to this VPS's own public IP.
+    # The VPS can't hairpin-NAT back to itself (OVH), so reaching that IP hangs. Pin the
+    # name to the Docker host instead: the runner then hits the host-published Caddy edge
+    # (:443) with SNI intact, which SNI-routes into the same tunnel external clients use.
+    extra_hosts:
+      - "forge.wynning.tech:host-gateway"
+    # Match the image's built-in user, which owns /data — a fresh named volume inherits
+    # that ownership, so the daemon can write runner-config.yml / cache / workdir. (The
+    # eleboucher reference used 1001 because it host-chowned a bind mount; we use a volume.)
+    user: "1000:1000"
+    working_dir: /data
+    volumes:
+      - data:/data
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        set -e
+        umask 077
+        cat > /data/runner-config.yml <<EOF
+        cache:
+          enabled: true
+          dir: /data/cache
+        container:
+          docker_host: tcp://forgejo-runner-dind:2375
+          # Job containers need the same hairpin workaround as the daemon above, but they
+          # can't use `host-gateway`: they are created by the dind daemon, so they live in
+          # dind's OWN nested bridge, whose gateway (172.17.0.1) is the dind container --
+          # that is exactly why `forgejo-runner-dind:host-gateway` on this line resolves
+          # correctly. Pointing forge.wynning.tech there would hit dind, not the VPS.
+          # The VPS host is reachable from inside dind as this project's bridge gateway,
+          # pinned to a fixed subnet below so the literal here stays stable.
+          # Without this, `git fetch` in a job hangs ~5min per attempt on the VPS's own
+          # public IP and checkout fails after 3 tries (~15m30s).
+          options: >-
+            --add-host=forgejo-runner-dind:host-gateway
+            --add-host=forge.wynning.tech:172.31.255.1
+          workdir_parent: /data/workdir
+        log:
+          level: info
+        runner:
+          capacity: 1
+          envs:
+            DOCKER_HOST: tcp://forgejo-runner-dind:2375
+          file: .runner
+          labels:
+            - ubuntu-latest:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+            - default:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+            - docker:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+            # Host-specific label: jobs that must run *on the VPS* (e.g.
+            # deploy-doco-cd-vps.yaml, which SSHes to 172.31.255.1) target this;
+            # the in-cluster runner also answers to ubuntu-latest.
+            - vps:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+          timeout: 3h
+          # On SIGTERM stop taking new jobs and wait this long for running
+          # ones to finish before exiting; unset, they are cancelled on the
+          # spot, which is what every doco-cd redeploy of this stack did to
+          # in-flight CI. Paired with stop_grace_period on both services.
+          shutdown_timeout: 30m
+        server:
+          connections:
+            forgejo:
+              url: https://forge.wynning.tech/
+              uuid: "$${FORGEJO_RUNNER_UUID}"
+              token: "$${FORGEJO_RUNNER_TOKEN}"
+        EOF
+        exec forgejo-runner daemon --config /data/runner-config.yml
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+    logging: *default-logging
+volumes:
+  dind-data:
+  data:
+networks:
+  # Fixed subnet so the gateway address is a stable literal for the job containers'
+  # --add-host above. Docker would otherwise auto-pick from 172.17.0.0/12 in creation
+  # order, and the value could change. dind's nested networks come from its own
+  # 10.200.0.0/16 pool (see its --default-address-pool), so they cannot collide here.
+  #
+  # MTU 1280: job containers resolve *.wynning.tech via the host's tailnet split DNS
+  # to the tailnet route for envoy-internal, so their TLS goes out tailscale0 (MTU
+  # 1280). At the default 1500 the handshake completes but the first full-size
+  # segment (the ClientHello) is black-holed — the same failure the README documents
+  # for `edge`, and the reason ntfy looked "intermittently unreachable" from jobs.
+  # Changing it needs the manual `docker compose -p 04-runner down` (NOT -v) in the
+  # README; doco-cd cannot re-create a live network.
+  default:
+    driver_opts:
+      com.docker.network.driver.mtu: "1280"
+    ipam:
+      config:
+        - subnet: 172.31.255.0/24
+          gateway: 172.31.255.1

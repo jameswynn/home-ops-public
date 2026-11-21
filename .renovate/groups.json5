@@ -1,0 +1,91 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "packageRules": [
+    {
+      "description": "Authentik image and chart",
+      "groupName": "authentik",
+      "matchPackagePatterns": ["goauthentik", "authentik"],
+      "matchDatasources": ["docker", "github-releases", "helm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} group"
+      },
+      "separateMinorPatch": false
+    },
+    {
+      "description": "cert-manager image and chart",
+      "groupName": "cert-manager",
+      "matchPackagePatterns": ["cert-manager"],
+      "matchDatasources": ["docker", "github-releases", "helm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} group"
+      },
+      "separateMinorPatch": false
+    },
+    {
+      description: "Flux Operator Group",
+      groupName: "flux-operator",
+      matchDatasources: ["docker"],
+      matchPackageNames: ["/flux-operator/", "/flux-instance/", "/flux-operator-manifests/"],
+      group: {
+        commitMessageTopic: "{{{groupName}}} group",
+      },
+      minimumGroupSize: 3,
+    },
+    {
+      description: "Intel Device Plugins Group",
+      groupName: "intel-device-plugins",
+      matchDatasources: ["docker", "github-releases", "helm"],
+      matchPackageNames: ["/intel-device-plugins-operator/", "/intel-device-plugins-gpu/"],
+      group: {
+        commitMessageTopic: "{{{groupName}}} group",
+      },
+      minimumGroupSize: 2,
+    },
+    {
+      // Two pins for one binary: the mise tool in //mise.toml and the kritika
+      // runner tool in //.kritika.yaml. They must move together so local and PR
+      // reviews render with the same flate version.
+      // The mise pin stores a bare version; .kritika.yaml requires the full
+      // v-prefixed release tag, handled by the rule below.
+      description: "flate CLI: mise pin + Kritika pin",
+      groupName: "flate",
+      matchDatasources: ["github-releases"],
+      matchPackageNames: ["home-operations/flate"],
+      extractVersion: "^v(?<version>.+)$",
+      group: {
+        commitMessageTopic: "{{{groupName}}} group",
+      },
+    },
+    {
+      // The vectorchord operand image (docker, tag `<pg>-<ver>`) and the vchord
+      // extension `version:` pins in CNPG Database objects (github-releases,
+      // bare `<ver>`) describe the same thing and break if they move apart:
+      // image ahead -> Immich's own ALTER EXTENSION fails on ownership and it
+      // crash-loops (#2531); pin ahead -> CNPG cannot UPDATE TO a version the
+      // image does not ship. One PR for both, for EVERY update type: the very
+      // next update is the 0.5 -> 1.x major, and dependencyDashboardApproval
+      // (.renovate/postgres.json5, extended there to the release pin) gates
+      // when it opens, not how — without majors in this group, ticking the box
+      // would open two PRs that each break on their own.
+      description: "VectorChord operand image + CNPG extension version pins",
+      groupName: "vectorchord",
+      matchDatasources: ["docker", "github-releases"],
+      matchPackageNames: ["/cloudnative-vectorchord$/", "tensorchord/VectorChord"],
+      group: {
+        commitMessageTopic: "{{{groupName}}} group",
+      },
+    },
+    {
+      // kritika requires the exact v-prefixed release tag for aqua tools, unlike
+      // the bare-version mise pin. Later rules win, so this re-extracts the full
+      // tag for .kritika.yaml only; the groupName above still applies.
+      description: "flate in .kritika.yaml: keep the v-prefixed tag",
+      matchFileNames: [".kritika.yaml"],
+      matchDatasources: ["github-releases"],
+      matchPackageNames: ["home-operations/flate"],
+      extractVersion: "^(?<version>v.+)$",
+    },
+  ]
+}

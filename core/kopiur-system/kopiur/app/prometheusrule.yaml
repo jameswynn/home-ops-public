@@ -1,0 +1,59 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/prometheusrule_v1.json
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kopiur-mover
+  namespace: kopiur-system
+spec:
+  groups:
+    # Gaps in the chart's own rules. kopiur fails a run whose mover pod is
+    # Unschedulable (MoverPodWedged), but a pod that is scheduled and never
+    # starts, or a mover that never exits, keeps its Snapshot Pending/Running
+    # indefinitely. The chart's KopiurBackupStale waits 48h. On 2026-11-11 sonarr
+    # (8h) and bazarr (5h) hung in ContainerCreating after Longhorn failed to
+    # clone their staging volumes, and nothing fired.
+    #
+    # Scheduled movers are Jobs named <policy>-<YYYYMMDDHHMMSS>; manual runs are
+    # named freely and are watched by whoever started them.
+    - name: kopiur-mover
+      rules:
+        # Never started: almost always the staging PVC (a Longhorn clone of the
+        # source volume) cannot attach. Healthy movers start in seconds.
+        - alert: KopiurMoverNotStarting
+          annotations:
+            summary: >-
+              kopiur mover {{ $labels.namespace }}/{{ $labels.pod }} has been ContainerCreating for over 15m.
+            description: >-
+              The backup's staging volume most likely failed to clone or attach
+              (`kubectl -n {{ $labels.namespace }} describe pod {{ $labels.pod }}`
+              shows FailedAttachVolume "not ready for workloads"). kopiur will not
+              time this out; later runs of the same policy queue behind it.
+            runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#kopiurmovernotstarting
+          expr: |
+            max by (namespace, pod) (
+              kube_pod_container_status_waiting_reason{reason="ContainerCreating", pod=~".+-20[0-9]{12}-[a-z0-9]{5}"}
+            ) == 1
+          for: 15m
+          labels:
+            severity: warning
+
+        # Running too long. The slowest run on record is forgejo's first full
+        # backup at ~15m (871s); everything else finishes in under 4m.
+        - alert: KopiurMoverStuck
+          annotations:
+            summary: >-
+              kopiur backup Job {{ $labels.namespace }}/{{ $labels.job_name }} has been active for {{ $value | humanizeDuration }}.
+            description: >-
+              A scheduled backup has not finished after an hour. Either its pod
+              never started (see KopiurMoverNotStarting) or kopia is hung on the
+              repository. kopiur will not time this out; later runs of the same
+              policy queue behind it.
+            runbook_url: https://forge.wynning.tech/james/home-ops/src/branch/main/troubleshooting.md#kopiurmoverstuck
+          expr: |
+            (time() - max by (namespace, job_name) (kube_job_status_start_time{job_name=~".+-20[0-9]{12}"})) > 3600
+            and on (namespace, job_name)
+            max by (namespace, job_name) (kube_job_status_active) > 0
+          for: 5m
+          labels:
+            severity: warning

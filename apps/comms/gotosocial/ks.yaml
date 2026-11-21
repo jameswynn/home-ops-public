@@ -1,0 +1,64 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app gotosocial-database
+  namespace: &namespace comms
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  # First bootstrap pulls the operand image and runs initdb.
+  timeout: 15m
+  dependsOn:
+    - name: cloudnative-pg
+      namespace: default
+  path: ./apps/comms/gotosocial/database
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # `wait: true` alone passes while initdb is still running (kstatus has no
+  # CNPG rule, onedr0p/home-ops#11787), so check the Ready condition. The app
+  # Kustomization below dependsOn this.
+  wait: false
+  healthChecks:
+    - apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      name: gotosocial-postgres
+      namespace: comms
+  healthCheckExprs:
+    - apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      current: status.conditions.exists(e, e.type == 'Ready' && e.status == 'True')
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app gotosocial
+  namespace: &namespace comms
+spec:
+  targetNamespace: *namespace
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  # Postgres since #2302: don't roll a pod before gotosocial-postgres is Ready.
+  dependsOn:
+    - name: gotosocial-database
+      namespace: *namespace
+  path: ./apps/comms/gotosocial/app
+  postBuild:
+    substitute:
+      APP: *app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

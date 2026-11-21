@@ -1,0 +1,60 @@
+---
+# Per-app backup operations for components/kopiur (replaces .taskfiles/VolSync.yaml).
+# Uses the `kubectl kopiur` plugin from mise.toml.
+version: "3"
+
+tasks:
+
+  backup:
+    desc: 'Run an app''s SnapshotPolicy now and wait for it. Args: app=<name> namespace=<ns>.'
+    vars:
+      app: '{{ or .app (fail "app is required (e.g. `task kopiur:backup app=koffan namespace=default`)") }}'
+      namespace: '{{ or .namespace (fail "namespace is required") }}'
+    preconditions:
+      - kubectl -n {{.namespace}} get snapshotpolicy {{.app}}
+    cmds:
+      - kubectl kopiur snapshot now -n {{.namespace}} --policy {{.app}} --wait
+
+  snapshots:
+    desc: 'List an app''s snapshots, newest last. Args: app=<name> namespace=<ns>.'
+    vars:
+      app: '{{ or .app (fail "app is required") }}'
+      namespace: '{{ or .namespace (fail "namespace is required") }}'
+    cmds:
+      - >-
+        kubectl -n {{.namespace}} get snapshots.kopiur.home-operations.com
+        -l kopiur.home-operations.com/config={{.app}}
+        --sort-by=.status.timing.endTime
+
+  restore:
+    desc: 'Replace an app''s PVC with its LATEST backup: quiesce, delete the PVC, let Flux recreate it through the kopiur populator, wait, resume. Args: app=<name> namespace=<ns>. ks=<name> (defaults to app).'
+    interactive: true
+    vars:
+      app: '{{ or .app (fail "app is required (e.g. `task kopiur:restore app=koffan namespace=default`)") }}'
+      namespace: '{{ or .namespace (fail "namespace is required") }}'
+      ks: '{{ .ks | default .app }}'
+      replicas:
+        sh: 'r=$(kubectl -n {{.namespace}} get deploy,sts -l app.kubernetes.io/name={{.app}} -o jsonpath="{.items[0].spec.replicas}" 2>/dev/null); echo ${r:-1}'
+    preconditions:
+      - sh: kubectl -n {{.namespace}} get restore {{.app}}
+        msg: 'no Restore {{.app}} in {{.namespace}}: is the app on components/kopiur?'
+    prompt: 'This DELETES PVC {{.namespace}}/{{.app}} and repopulates it from the latest snapshot. Continue?'
+    cmds:
+      # Registered first -> runs last, whatever happens: bring the app back.
+      - defer: |
+          flux -n {{.namespace}} resume hr {{.app}} || true
+          kubectl -n {{.namespace}} scale deploy,sts -l app.kubernetes.io/name={{.app}} --replicas={{.replicas}} || true
+      - flux -n {{.namespace}} suspend hr {{.app}}
+      - kubectl -n {{.namespace}} scale deploy,sts -l app.kubernetes.io/name={{.app}} --replicas=0
+      - kubectl -n {{.namespace}} wait pod -l app.kubernetes.io/name={{.app}} --for=delete --timeout=2m || true
+      - kubectl -n {{.namespace}} delete pvc {{.app}}
+      # The PVC is create-only in Git (ssa: IfNotPresent), so Flux recreates it
+      # with dataSourceRef -> Restore {{.app}}; the Restore re-resolves the latest
+      # snapshot for a re-created claim.
+      - flux -n {{.namespace}} reconcile ks {{.ks}}
+      - >-
+        kubectl -n {{.namespace}} wait restore/{{.app}}
+        --for=jsonpath='{.status.claims.{{.app}}.phase}'=Populated --timeout=30m
+      - >-
+        kubectl -n {{.namespace}} get restore {{.app}}
+        -o jsonpath='restored {.status.claims.{{.app}}.resolved.kopiaSnapshotID}{"\n"}'

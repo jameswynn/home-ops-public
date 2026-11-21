@@ -1,0 +1,72 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: okb-namespace-policy
+  namespace: &namespace okb
+spec:
+  endpointSelector: {}
+  ingress:
+    # Obsidian clients reach CouchDB through envoy-internal only (LAN and
+    # WireGuard); the vault is never publicly routable.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.networking.k8s.io/gateway-name: envoy-internal
+            "k8s:io.kubernetes.pod.namespace": networking
+      toPorts:
+        - ports:
+            - port: "5984"
+              protocol: TCP
+
+    # bridge -> couchdb
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": *namespace
+
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": *namespace
+
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # bridge's git-sync -> forge.wynning.tech. Hostname-addressed, so it lands
+    # on the envoy-internal pods; a toCIDR of the gateway VIP never matches
+    # (see apps/ai/netpols.yaml). No port filter: envoy's listener port is an
+    # implementation detail of the gateway, not 443.
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.networking.k8s.io/gateway-name: envoy-internal
+            "k8s:io.kubernetes.pod.namespace": networking
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cilium.io/ciliumnetworkpolicy_v2.json
+# kopiur mover Jobs PATCH their results back onto the Snapshot CR; scoped to
+# kopiur pods only, unioned with the namespace policy above.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kopiur-mover-apiserver
+  namespace: okb
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: kopiur
+  egress:
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - protocol: TCP
+              port: "6443"

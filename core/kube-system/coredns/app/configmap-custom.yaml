@@ -1,0 +1,16 @@
+---
+# Drop-in Corefile fragments, same mechanism k3s offered:
+#   *.override -> imported inside the `.:53` server block
+#   *.server   -> imported at top level (extra server blocks)
+# Was hand-applied (kubectl, 2026-04) with the k3s addon; now Flux-owned.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+# Empty on purpose. The k3s addon shipped a `log` override here (full query
+# logging to stdout); kept through the Flux migration, it was ~3.7k lines/min,
+# ~1.2GiB/day, the single largest steady-state Loki producer, and contributed
+# to loki-chunks hitting its quota on 2026-11-14. Query-level debugging is a
+# one-off: add `logging.override: "log"` back, reconcile, remove when done.
+data: {}

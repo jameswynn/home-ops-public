@@ -1,0 +1,17 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - externalsecret.yaml
+  - helmrelease.yaml
+  - ocirepository.yaml
+configMapGenerator:
+  - name: couchdb-config
+    files:
+      - okb.ini
+      - setup.sh
+generatorOptions:
+  disableNameSuffixHash: true
+  annotations:
+    # setup.sh is full of shell ${VARS}; Flux postBuild must not touch them.
+    kustomize.toolkit.fluxcd.io/substitute: disabled

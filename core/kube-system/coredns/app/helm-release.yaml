@@ -1,0 +1,148 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/source.toolkit.fluxcd.io/ocirepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: coredns
+spec:
+  interval: 1h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 1.50.8
+  url: oci://ghcr.io/coredns/charts/coredns
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: coredns
+  namespace: kube-system
+  annotations:
+    # Pruning this HR = `helm uninstall` = kube-dns Service deleted. Never GC it.
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: coredns
+  install:
+    createNamespace: false
+    # No install remediation: helm-controller remediates a failed install
+    # with `helm uninstall`, which here would delete the adopted kube-dns
+    # Service (cluster DNS outage). A failed install stays failed until
+    # kicked (`task cluster:hr-retry -- -n kube-system coredns`).
+    # Cutover history/rollback: operations.md "Cluster DNS (CoreDNS)".
+    remediation:
+      retries: 0
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    # Object names must equal the k3s addon's so Helm adopts them in place:
+    # Deployment/ConfigMap/ServiceAccount `coredns`, Service `kube-dns`.
+    fullnameOverride: coredns
+    k8sAppLabelOverride: kube-dns  # CiliumNetworkPolicies + kps ServiceMonitor select k8s-app=kube-dns
+    replicaCount: 2
+    priorityClassName: system-cluster-critical
+    rollingUpdate:
+      maxUnavailable: 0  # surge first; a 1-replica rollout must never drop to zero
+      maxSurge: 1
+    deployment:
+      # Immutable in-place: must equal the k3s Deployment's selector exactly.
+      selector:
+        matchLabels:
+          k8s-app: kube-dns
+    service:
+      name: kube-dns
+      clusterIP: 10.43.0.10
+      clusterIPs: [10.43.0.10]
+      ipFamilies: [IPv4]
+      ipFamilyPolicy: SingleStack
+    serviceAccount:
+      create: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: null  # chart defaults a 100m limit; repo convention is no CPU limits
+        memory: 128Mi
+    servers:
+      - zones:
+          - zone: .
+            use_tcp: true  # also publishes 53/TCP on the Service
+        port: 53
+        # Mirrors the k3s Corefile; differences are called out inline.
+        plugins:
+          - name: errors
+          - name: health
+            configBlock: |-
+              lameduck 5s
+          - name: ready
+          - name: kubernetes
+            parameters: cluster.local in-addr.arpa ip6.arpa
+            configBlock: |-
+              pods insecure
+              fallthrough in-addr.arpa ip6.arpa
+          # k3s kept a NodeHosts file in the coredns ConfigMap, maintained by
+          # the k3s node controller - which stops once the addon is disabled.
+          # Static node list instead (hardware.md); update when nodes change.
+          - name: hosts
+            configBlock: |-
+              192.168.1.12 muspelheim
+              192.168.1.13 svartalfheim
+              192.168.1.14 nidavellir
+              192.168.1.15 helheim
+              192.168.1.18 niflheim
+              ttl 60
+              fallthrough
+          - name: prometheus
+            parameters: 0.0.0.0:9153
+          - name: cache
+            parameters: "30"
+          - name: loop
+          - name: reload
+          - name: loadbalance
+          - name: import
+            parameters: /etc/coredns/custom/*.override
+          - name: forward
+            parameters: . /etc/resolv.conf
+    extraConfig:
+      import:
+        parameters: /etc/coredns/custom/*.server
+    extraVolumes:
+      - name: custom-config-volume
+        configMap:
+          name: coredns-custom
+          optional: true
+    extraVolumeMounts:
+      - name: custom-config-volume
+        mountPath: /etc/coredns/custom
+        readOnly: true
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: Exists
+    topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            k8s-app: kube-dns
+        matchLabelKeys:
+          - pod-template-hash
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+    podDisruptionBudget:
+      minAvailable: 1

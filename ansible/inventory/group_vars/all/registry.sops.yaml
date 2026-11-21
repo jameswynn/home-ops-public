@@ -1,0 +1,19 @@
+k3s_registry_auth:
+    docker.io:
+        username: ENC[AES256_GCM,data:5T1xfJ4=,iv:EPzJXgXqSusJhWyxLbLJC70hD3c0bdJp7GPO8D8w8X0=,tag:7vRvee1X4ncypyyt/EdkbQ==,type:str]
+        password: ENC[AES256_GCM,data:vfFhbjMm34Pbz/tq3+TBhDO/nnL/UEv78v0SBRRN0FXOov2+,iv:+u/kUT/7zscDLxHP7/x4ccCu7A9WyTmKz/Azv4Dja4c=,tag:KzH98YLq0ncGPWiTpEjCgg==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBQZElMcE5MYmE1S2ZYU1N2
+            cnZZS1JrVTNxRjNLcWU5NEJuM2N3QlJqUTNRClNCZkhMdk0wcGxNcDlqMGp6czcv
+            Ry9GWlY1RUtHRnk4WkR6Q1ZSUGhzdEkKLS0tIDhqMGoyM1MzdGw4dHlLRnZFK0Uv
+            K2ZSQVBKUWdxM0h2NzFoQkhIZHVvckEK/1xB/eXjdSI5hGp2w28jZmf/h6o/uDJ6
+            BJQt7AuX50hwKpBFrZV66bcG9XamuFvbZJf4cFXTXF/lqnek4lFBFg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem
+    lastmodified: "2026-10-29T21:57:56Z"
+    mac: ENC[AES256_GCM,data:0iCYl7Jjs/9v9fzMhebJ4y8v/4PR0xlormGa/sBxPVrlaf0lnJ3VpK/MTA77YRMTHAauUdpFeTG9W3UozOM6XNoZzLHGETYX4xMq5cVm296VAL+QHQSDCEmM9mhdtcfxPFxVHxa1mqCHDcaIgJLTg2syAlsVrp1vIlzWnj8hWic=,iv:aThdXkHkv+G215mPjd5Yugs645M8a88Cz26yV+qNy1c=,tag:lkCkUVX69d4RL2X18oiqhg==,type:str]
+    unencrypted_regex: ^(kind)$
+    version: 3.13.3

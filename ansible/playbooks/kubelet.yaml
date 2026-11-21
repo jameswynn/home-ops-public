@@ -1,0 +1,116 @@
+---
+# Manage /etc/rancher/k3s/config.yaml.d/kubelet.yaml: kubelet flags that the
+# install command in operations.md does not set. k3s merges the drop-in with
+# the flags baked into its systemd unit and reads it only at startup, so
+# changed nodes are restarted one at a time (same shape as registries.yaml).
+#
+# max-pods: the kubelet default is 110. On 2026-11-17 the first kured reboot
+# through the fixed node-maintenance-gate drained helheim onto nidavellir,
+# which hit 110 and stayed there after helheim returned. 38 of the 50 kopiur
+# cache PVCs are local-path volumes pinned to nidavellir, so every one of those
+# movers was Unschedulable ("Too many pods") and ~200 hourly backups failed
+# over five hours. Cilium runs ipam=kubernetes on k3s's /24 per node (254
+# addresses), so 150 fits with room; it is a ceiling on an arbitrary default,
+# not a target. niflheim (Pi 4, 8GiB) keeps the default on purpose.
+#
+# Convergence is decided by what the kubelet reports, not by whether the file
+# changed: a run interrupted between writing the drop-in and restarting would
+# otherwise leave a node on the old limit forever, with every later run
+# reporting success. After a restart the play waits for the node's Lease to
+# renew past the restart time before trusting Ready or capacity, because a
+# k3s restart never takes the node out of Ready and the status it shows for
+# the first ~40s is the one the old kubelet published.
+- hosts:
+    - kubernetes
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    k3s_max_pods: "{{ 110 if inventory_hostname in groups['arm64'] else 150 }}"
+    k3s_unit: "{{ 'k3s' if inventory_hostname in groups['master'] else 'k3s-agent' }}"
+    kubectl_env:
+      KUBECONFIG: "{{ playbook_dir }}/../../kubeconfig"
+  tasks:
+    - name: Kubelet | Create the k3s config drop-in directory
+      ansible.builtin.file:
+        path: /etc/rancher/k3s/config.yaml.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Kubelet | Render /etc/rancher/k3s/config.yaml.d/kubelet.yaml
+      ansible.builtin.copy:
+        dest: /etc/rancher/k3s/config.yaml.d/kubelet.yaml
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by ansible (playbooks/kubelet.yaml) - do not edit on the node.
+          kubelet-arg:
+            - max-pods={{ k3s_max_pods }}
+      register: kubelet_dropin
+
+    - name: Kubelet | Read the capacity the running kubelet reports
+      ansible.builtin.command: >-
+        kubectl get node {{ inventory_hostname }} -o jsonpath={.status.capacity.pods}
+      delegate_to: localhost
+      become: false
+      environment: "{{ kubectl_env }}"
+      register: kubelet_capacity_before
+      changed_when: false
+
+    - name: Kubelet | Restart k3s when the drop-in changed or the kubelet disagrees with it
+      when: kubelet_dropin.changed or kubelet_capacity_before.stdout != (k3s_max_pods | string)
+      block:
+        - name: Kubelet | Restart k3s
+          ansible.builtin.systemd:
+            name: "{{ k3s_unit }}"
+            state: restarted
+
+        # Anchor: when the restart returned, in the same clock and format the
+        # lease uses (UTC RFC3339, compared to the second). Comparing against the
+        # lease recorded BEFORE the restart would not do: the old kubelet renews
+        # every 10s and can slip one more renewal in between that snapshot and
+        # systemd stopping it.
+        - name: Kubelet | Note when the restart completed
+          ansible.builtin.command: date -u +%Y-%m-%dT%H:%M:%S
+          delegate_to: localhost
+          become: false
+          register: restart_done_at
+          changed_when: false
+
+        # The kubelet renews its lease every 10s once it is up. A renewTime later
+        # than the restart's completion can only have come from the NEW kubelet.
+        - name: Kubelet | Wait for the new kubelet to renew the node lease
+          ansible.builtin.command: >-
+            kubectl -n kube-node-lease get lease {{ inventory_hostname }} -o jsonpath={.spec.renewTime}
+          delegate_to: localhost
+          become: false
+          environment: "{{ kubectl_env }}"
+          register: lease_after
+          changed_when: false
+          retries: 30
+          delay: 10
+          until: (lease_after.stdout | default(''))[:19] > restart_done_at.stdout
+
+        - name: Kubelet | Wait for node Ready
+          ansible.builtin.command: >-
+            kubectl wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=300s
+          delegate_to: localhost
+          become: false
+          environment: "{{ kubectl_env }}"
+          changed_when: false
+
+        - name: Kubelet | Verify the kubelet picked up max-pods
+          ansible.builtin.command: >-
+            kubectl get node {{ inventory_hostname }} -o jsonpath={.status.capacity.pods}
+          delegate_to: localhost
+          become: false
+          environment: "{{ kubectl_env }}"
+          register: kubelet_capacity_after
+          changed_when: false
+          retries: 12
+          delay: 10
+          until: kubelet_capacity_after.stdout == (k3s_max_pods | string)

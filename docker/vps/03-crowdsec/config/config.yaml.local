@@ -1,0 +1,8 @@
+---
+# Local overrides merged onto crowdsec's config.yaml. Expose Prometheus metrics on 6060
+# for the observability stack (prometheus-agent scrapes crowdsec:6060 over the edge net).
+prometheus:
+  enabled: true
+  level: full
+  listen_addr: 0.0.0.0
+  listen_port: 6060

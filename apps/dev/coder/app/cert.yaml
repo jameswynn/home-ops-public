@@ -1,0 +1,19 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/cert-manager.io/certificate_v1.json
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: coder-cert
+spec:
+  commonName: "coder.${SECRET_INTERNAL_DOMAIN}"
+  dnsNames:
+    - "coder.${SECRET_INTERNAL_DOMAIN}"
+    - "*.coder.${SECRET_INTERNAL_DOMAIN}"
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: letsencrypt
+  secretName: coder-cert
+  usages:
+    - digital signature
+    - key encipherment

@@ -1,0 +1,13 @@
+{
+  "builder": {
+    "gc": {
+      "enabled": true,
+      "defaultReservedSpace": "5GB",
+      "policy": [
+        { "keepDuration": "48h", "maxUsedSpace": "2GB", "filter": ["type=source.local"] },
+        { "keepDuration": "168h", "reservedSpace": "5GB", "maxUsedSpace": "20GB" },
+        { "reservedSpace": "5GB", "maxUsedSpace": "20GB", "all": true }
+      ]
+    }
+  }
+}

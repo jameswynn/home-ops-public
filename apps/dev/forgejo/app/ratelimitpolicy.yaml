@@ -1,0 +1,45 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.envoyproxy.io/backendtrafficpolicy_v1alpha1.json
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: forgejo-scraper-ratelimit
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: forgejo-public
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        # Filter-permutation crawling on the issue/PR indexes. Each hit is an
+        # uncached Postgres query over an effectively infinite
+        # assignee x labels x milestone x poster x project x state x type space.
+        - clientSelectors:
+            - path:
+                type: RegularExpression
+                value: "^/[^/]+/[^/]+/(issues|pulls)/?$"
+              headers:
+                # Anonymous only - a logged-in session bypasses this entirely.
+                - name: Cookie
+                  type: RegularExpression
+                  value: ".*i_like_gitea=.*"
+                  invert: true
+          limit:
+            requests: 30
+            unit: Minute
+
+        # Repo-tree walking: every commit, every blob, every blame view.
+        - clientSelectors:
+            - path:
+                type: RegularExpression
+                value: "^/[^/]+/[^/]+/(commit|commits|blame|src|raw|archive|graph|compare|find|activity)(/.*)?$"
+              headers:
+                - name: Cookie
+                  type: RegularExpression
+                  value: ".*i_like_gitea=.*"
+                  invert: true
+          limit:
+            requests: 60
+            unit: Minute

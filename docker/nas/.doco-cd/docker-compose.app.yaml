@@ -1,0 +1,42 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# doco-cd bootstrap — the GitOps controller for the NAS compose stacks.
+# The non-standard filename (docker-compose.app.yaml) keeps doco-cd's auto_discovery
+# from picking this up, so it never redeploys itself. Instead,
+# .forgejo/workflows/deploy-doco-cd-nas.yaml runs docker/update-doco-cd.sh on the NAS
+# whenever this dir changes (see ../README.md → Controller updates). First start by hand:
+#   sops -d secret.sops.env > .env
+#   docker compose -f docker-compose.app.yaml up -d
+name: doco-cd
+services:
+  doco-cd:
+    container_name: doco-cd
+    # Held at 0.121.0 (not docker/vps's 0.127.0): the NAS runs Docker 24 / API 1.43 and
+    # this is the newest release verified against it. Test a bump before merging.
+    image: ghcr.io/kimdre/doco-cd:0.121.0
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: America/Chicago
+      # The .doco-cd.yaml deploy config lives here (relative to repo root), not at the root.
+      DEPLOY_CONFIG_BASE_DIR: ./docker/nas/
+      # Poll this repo and reconcile ./docker/nas per .doco-cd.yaml (no inbound webhook).
+      POLL_CONFIG: |
+        - url: https://forge.wynning.tech/james/home-ops.git
+          reference: main
+          interval: 180
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Separate from the nas-doco era's /volume1/docker/doco-cd-data, so no state keyed
+      # to the old repo is inherited. Must exist before first start.
+      - /volume1/docker/doco-cd-home-ops:/data
+    healthcheck:
+      test:
+        - "CMD"
+        - "/doco-cd"
+        - "healthcheck"
+      start_period: 15s
+      interval: 30s
+      timeout: 5s
+      retries: 3
