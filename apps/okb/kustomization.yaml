@@ -1,0 +1,20 @@
+---
+# Obsidian vault sync (okb = personal knowledge base).
+#
+#   clients (Self-hosted LiveSync, E2EE) ⇄ couchdb ⇄ bridge ⇄ forge.wynning.tech/james/personal-okb
+#
+# couchdb is the live-sync hub; bridge mirrors it to a plain working tree and
+# is the only git writer. See bridge/app/helmrelease.yaml for the flow.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: okb
+resources:
+  - netpols.yaml
+  - couchdb/ks.yaml
+  - bridge/ks.yaml
+components:
+  - ../../components/common
+  - ../../components/cluster-vars
+  - ../../components/limits
+  - ../../components/kopiur-secret
+  - ../../components/forgejo-docker-creds

@@ -1,0 +1,32 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone-strict/storageclass-storage-v1.json
+# Throwaway clones kopiur stages from each backup's VolumeSnapshot
+# (components/kopiur snapshotpolicy `staging.storageClassName`).
+#
+# - nodeSelector "kopiur-staging": the clone's replica never lands on
+#   muspelheim, whose etcd WAL shares a DRAM-less BX500 with the Longhorn
+#   replica store. Forgejo's 40Gi first backup wrote its clone there at
+#   ~70-130 MB/s and stalled etcd (WAL fsync p99 1.5 s, 2026-11-08), flapping
+#   three nodes. niflheim (Pi 4) is left untagged too.
+# - numberOfReplicas "1": the clone lives minutes and is re-staged next run,
+#   so redundancy buys nothing and 3 replicas triple the write I/O.
+#
+# The tag is set on nodes.longhorn.io (helheim, nidavellir, svartalfheim),
+# not in Git; see operations.md "Longhorn node tags".
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-kopiur-staging
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "1"
+  nodeSelector: "kopiur-staging"
+  dataEngine: "v1"
+  dataLocality: "disabled"
+  disableRevisionCounter: "true"
+  fsType: "ext4"
+  staleReplicaTimeout: "30"
+  unmapMarkSnapChainRemoved: "ignored"

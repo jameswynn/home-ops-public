@@ -1,0 +1,59 @@
+---
+# Flux image automation, as apps/saam/app/deploy.yaml: new semver tags on the
+# forge registry (release candidates included) are committed to main by Flux
+# via the Setters markers in helmrelease.yaml. Setters rewrite only the tag, so
+# the image is not digest-pinned.
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/image.toolkit.fluxcd.io/imagerepository_v1.json
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: agent-router
+spec:
+  image: forge.wynning.tech/james/agent-router
+  interval: 5m
+  secretRef:
+    name: forge-wynning-tech-creds
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/image.toolkit.fluxcd.io/imagepolicy_v1.json
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: agent-router
+spec:
+  imageRepositoryRef:
+    name: agent-router
+  policy:
+    semver:
+      range: ">=0.1.0-0"
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/image.toolkit.fluxcd.io/imageupdateautomation_v1.json
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: agent-router
+spec:
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: Flux Bot
+        email: flux@example.com
+      messageTemplate: |
+        agent-router: automated image update
+
+        Automation: {{ .AutomationObject.Namespace }}/{{ .AutomationObject.Name }}
+        {{- range .Changed.Changes }}
+        - {{ .OldValue }} -> {{ .NewValue }}
+        {{- end }}
+    push:
+      branch: main
+  update:
+    strategy: Setters
+    path: ./apps/ai/agent-router/app

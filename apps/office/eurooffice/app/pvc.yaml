@@ -1,0 +1,17 @@
+---
+# Logs claim only; the state claim (eurooffice-data) comes from
+# components/kopiur in ks.yaml. The image ships pre-baked contents under both
+# paths, so the init container in helm-release.yaml seeds empty claims before
+# the main container starts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: eurooffice-logs
+  namespace: office
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: longhorn

@@ -1,0 +1,29 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - externalsecret.yaml
+  - helm-release.yaml
+  - backup-job.yaml
+  - volumesnapshotclass.yaml
+  - storageclass-kopiur-staging.yaml
+  - snapshot-delete.yaml
+  - replica-reaper.yaml
+  # - snapshot-cleanup.yaml
+  - filesystem-trim.yaml
+  - service-monitor.yaml
+  - prometheus-rules.yaml
+  - securitypolicy.yaml
+# reap.sh is Bash: its ${var}s are runtime expansions, not Flux substitution
+# tokens. Same arrangement as node-maintenance-gate: the script ships via a
+# generator with substitution disabled, so the manifests beside it (which do
+# use ${SECRET_ROOT_DOMAIN}) keep normal postBuild substitution.
+configMapGenerator:
+  - name: longhorn-replica-reaper
+    namespace: longhorn-system
+    files:
+      - reap.sh
+    options:
+      disableNameSuffixHash: true
+      annotations:
+        kustomize.toolkit.fluxcd.io/substitute: disabled

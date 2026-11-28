@@ -1,0 +1,36 @@
+---
+# Ban IPs that Envoy is already rate-limiting on Forgejo.
+#
+# Division of labour: Envoy's local rate limit (apps/dev/forgejo/app/ratelimitpolicy.yaml)
+# decides *what* counts as abusive — anonymous filter-permutation crawling of the issue/PR
+# indexes and repo-tree walking. It answers 429, which is cheap for the scraper to retry
+# and, more importantly, only *after* the request has already consumed a full TLS handshake
+# through the towonel tunnel. This scenario converts repeat offenders into an nftables drop
+# at the VPS edge, so subsequent connections die at L3 and never reach the tunnel at all.
+#
+# Expected yield is partial and that is by design: the observed campaign used >500 distinct
+# source IPs in a single 5-minute window (Loki's series cap refused to enumerate them),
+# rotating residential proxies with realistic browser UAs. Per-IP banning trims persistent
+# offenders; it will not end a campaign of that shape. The durable fix is making the
+# expensive endpoints not worth fetching (proof-of-work gate on anonymous requests).
+#
+# Tuning: watch `cscli metrics` (bucket pour/overflow) and `cscli decisions list -o human`.
+# If legitimate anonymous browsing trips this, raise capacity or lengthen leakspeed. The
+# home-ISP whitelist in ../whitelists/ runs at s02-enrich and applies here too, so a
+# home-network false positive cannot self-ban.
+type: leaky
+name: wynning/forgejo-scraper
+description: "Anonymous Forgejo scraping, as already rate-limited by Envoy"
+filter: |
+  evt.Meta.log_type == 'http_access-log' &&
+  evt.Meta.http_status == '429' &&
+  evt.Meta.target_fqdn == 'forge.wynning.tech'
+groupby: "evt.Meta.source_ip"
+capacity: 10
+leakspeed: "60s"
+# Stop re-alerting on an IP already actioned; the decision itself lasts far longer.
+blackhole: 10m
+labels:
+  service: http
+  type: scan
+  remediation: true

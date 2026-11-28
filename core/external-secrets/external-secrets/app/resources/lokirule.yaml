@@ -1,0 +1,16 @@
+---
+groups:
+  - name: external-secrets
+    # rules:
+    #   - alert: external-secret-recon-error
+    #     expr: |
+    #       sum by (ExternalSecret_name,ExternalSecret_namespace)(count_over_time({app="external-secrets"} |= "error" | json | msg="Reconciler error"[7m])) > 0
+    #     for: 2m
+    #     labels:
+    #       severity: critical
+    #       category: logs
+    #     annotations:
+    #       description: "{{ $labels.msg }}"
+    #       externalSecretName: "{{ $labels.ExternalSecret_name }}"
+    #       externalSecretNamespace: "{{ $labels.ExternalSecret_namespace }}"
+    #       summary: "External secret failed: {{ $labels.ExternalSecret_name }} in ns {{ $labels.ExternalSecret_namespace }}."

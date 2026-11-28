@@ -1,0 +1,31 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app couchdb
+  namespace: &namespace okb
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  components:
+    - ../../../../components/kopiur
+  postBuild:
+    substitute:
+      APP: *app
+      # Vault is <200Mi; CouchDB keeps revisions and chunks until compaction,
+      # so leave several times that.
+      KOPIUR_CAPACITY: 5Gi
+      KOPIUR_CACHE_CAPACITY: 2Gi
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/okb/couchdb/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

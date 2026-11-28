@@ -1,0 +1,14 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.envoyproxy.io/httproutefilter_v1alpha1.json
+# Referenced by the `metrics-block` HTTPRoute so /metrics returns a plain 404 on
+# the public towonel gateway. The ServiceMonitor scrapes the Service directly.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: navidrome-metrics-blocked
+spec:
+  directResponse:
+    statusCode: 404
+    body:
+      type: Inline
+      inline: "404 page not found"

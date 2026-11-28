@@ -1,0 +1,27 @@
+---
+# doco-cd deploy config for the NAS stacks — https://doco.cd
+# doco-cd auto-discovers each stack dir under working_dir and reconciles it. The Compose
+# project is named after the DIRECTORY, so renaming or deleting one destroys that stack
+# (delete: true) — the dirs are deliberately not numbered like docker/vps, to keep the
+# project names the stacks had in the old nas-doco repo.
+# external_secrets values are Bitwarden Secrets Manager secret UUIDs. The block is global:
+# one UUID the machine account can't read fails EVERY stack, so verify new ones first
+# (README → Secrets). Prefix names with the app.
+working_dir: ./docker/nas
+reconciliation:
+  enabled: true
+auto_discovery:
+  enabled: true
+  depth: 1
+  delete: true
+force_recreate: false
+external_secrets:
+  GARAGE_ADMIN_TOKEN: 198720f9-828b-4116-9255-b4f2014aa8f3
+  GARAGE_API_ADMIN_KEY: 443140ed-d5bc-4608-866a-b4f2014a9e00
+  GARAGE_AUTH_USER_PASS: 3c38be07-796c-486e-b058-b4f2014acf87
+  GARAGE_RPC_SECRET: 6204fafc-e345-48c6-bef1-b4f2014ab90d
+  ZOT_HTPASSWD: 98b4ed9e-5a1a-4107-9343-b4f20164fc40
+  ZOT_DOCKERHUB_USERNAME: c0120e0b-7839-490a-99fc-b4f30017bab0
+  ZOT_DOCKERHUB_TOKEN: 1198c4a7-1f6e-4687-b362-b4f30017a6b1
+  ZOT_GITHUB_USERNAME: bc2c1844-c9ab-4df4-8b1d-b4f3001650eb
+  ZOT_GITHUB_TOKEN: 4b83f975-0bbf-4126-a6d2-b4f300170cf9

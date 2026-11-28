@@ -1,0 +1,132 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s-labs/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app agent-router
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: *app
+  values:
+    controllers:
+      agent-router:
+        type: deployment
+        replicas: 1
+        strategy: RollingUpdate
+        annotations:
+          reloader.stakater.com/auto: "true"
+        pod:
+          labels:
+            descheduler.wynning.tech/rebalance: "true"
+          priorityClassName: batch-low
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          # Above the server's own 20s graceful-shutdown bound, so it drains first.
+          terminationGracePeriodSeconds: 30
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+        containers:
+          app:
+            image:
+              # Set by Flux image automation (imageautomation.yaml).
+              repository: forge.wynning.tech/james/agent-router # {"$imagepolicy": "ai:agent-router:name"}
+              tag: v0.1.0-rc.9 # {"$imagepolicy": "ai:agent-router:tag"}
+              pullPolicy: IfNotPresent
+            env:
+              AGENT_ROUTER_HOST: "0.0.0.0"
+              AGENT_ROUTER_PORT: "8000"
+              AGENT_ROUTER_ALLOW_NON_LOOPBACK: "true"
+              AGENT_ROUTER_CONFIG: /etc/agent-router/config.yaml
+              # Kubelet probes /health every few seconds; keep them out of the logs.
+              AGENT_ROUTER_LOG_HEALTH_CHECKS: "false"
+              # DEBUG logs tool message and response text: troubleshooting only.
+              AGENT_ROUTER_LOG_LEVEL: DEBUG
+              AGENT_ROUTER_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: AGENT_ROUTER_API_KEY
+              HA_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: HA_TOKEN
+              MATRIX_ACCESS_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: MATRIX_ACCESS_TOKEN
+            probes:
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 8000
+                  periodSeconds: 5
+                  failureThreshold: 12
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 8000
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 8000
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            # No CPU limit by cluster policy; memory request == limit.
+            resources:
+              requests:
+                cpu: 25m
+                memory: 192Mi
+              limits:
+                memory: 192Mi
+    defaultPodOptions:
+      imagePullSecrets:
+        - name: forge-wynning-tech-creds
+    service:
+      app:
+        controller: agent-router
+        type: ClusterIP
+        ports:
+          http:
+            port: 8000
+            primary: true
+    persistence:
+      config:
+        type: secret
+        name: *app
+        items:
+          - key: config.yaml
+            path: config.yaml
+        globalMounts:
+          - path: /etc/agent-router
+            readOnly: true
+      tmp:
+        type: emptyDir
+        sizeLimit: 64Mi
+        globalMounts:
+          - path: /tmp

@@ -1,0 +1,8 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/kustomization
+# Holder for the booklore-mariadb kopiur component (PVC, Restore, SnapshotPolicy,
+# SnapshotSchedule), injected by ../ks.yaml. The component names everything
+# after ${APP}, so the second PVC needs its own Kustomization.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []

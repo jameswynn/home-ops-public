@@ -1,0 +1,64 @@
+---
+kubernetes:
+  children:
+    master:
+      hosts:
+        muspelheim:
+          ansible_host: 192.168.1.12
+        svartalfheim:
+          ansible_host: 192.168.1.13
+        helheim:
+          ansible_host: 192.168.1.15
+      vars:
+        ansible_user: ubuntu
+    worker:
+      hosts:
+        nidavellir:
+          ansible_host: 192.168.1.14
+        niflheim:
+          ansible_host: 192.168.1.18
+        # jotunheim:
+        #   ansible_host: 192.168.1.16
+      vars:
+        ansible_user: ubuntu
+
+
+    arm64:
+      hosts:
+        niflheim:
+        # jotunheim:
+
+    # gVisor (runsc) sandbox nodes, see playbooks/gvisor.yaml: every amd64 node.
+    # niflheim (arm64, tainted) is excluded.
+    gvisor:
+      hosts:
+        helheim:
+        svartalfheim:
+        nidavellir:
+        muspelheim:
+
+    # nas:
+    #   hosts: []
+    #   vars:
+    #     ansible_user: ubuntu
+
+    utility:
+      hosts:
+        # midgard:
+        #   ansible_host: 192.168.1.11
+      vars:
+        ansible_user: ubuntu
+
+# Off-cluster hosts. Not members of `kubernetes`, so prepare.yaml / upgrade.yaml
+# (hosts: master, worker) never touch them; only playbooks/vps.yaml does.
+vps:
+  hosts:
+    heimdall:
+      # OVH VPS, public ingress edge (docker/vps). sshd is socket-activated and
+      # listens on 22 and 42222; 42222 is the one to rely on publicly. Tailscale
+      # SSH is the other admin path — it is also what was lost when the node key
+      # expired on 2026-11-05, which is why this group exists.
+      ansible_host: 15.204.118.232
+      ansible_port: 42222
+  vars:
+    ansible_user: ubuntu

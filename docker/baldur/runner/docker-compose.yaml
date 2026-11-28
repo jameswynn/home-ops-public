@@ -1,0 +1,165 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# Forgejo Actions runner on baldur (LAN desktop). Same shape as docker/vps/04-runner: a
+# privileged Docker-in-Docker sidecar is the job engine, so jobs never touch the host's
+# Docker, and the runner daemon authenticates with a persistent UUID+token pair created
+# in Forgejo's runner settings. Not managed by doco-cd: start and update it by hand
+# (see ../README.md). The pair lives in .env next to this file (gitignored).
+#
+# Differences from the VPS stack: baldur is on the LAN, so forge.wynning.tech resolves to
+# envoy-internal over br0 (MTU 1500). No hairpin pin, no fixed bridge subnet and no
+# MTU 1280 override are needed.
+#
+# The dind API is unauthenticated (tcp 2375, --tls=false) and root-equivalent; it is
+# never published and only this project's private bridge can reach it.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  forgejo-runner-dind:
+    # renovate: datasource=docker depName=docker
+    image: docker.io/library/docker:29-dind
+    container_name: forgejo-runner-dind
+    restart: unless-stopped
+    # Compose stops the runner first (it depends on this), so the grace here only has
+    # to cover dockerd's own teardown.
+    stop_grace_period: 2m
+    privileged: true
+    # Every job container runs inside this cgroup, so this caps all CI work on the box.
+    # baldur also hosts a large LLM server, so this stays bounded: capacity 2 at 6g is
+    # ~3 GB per concurrent job (the in-cluster runner gives ~2 GB). memswap == mem so a
+    # runaway job can't spill into host swap.
+    mem_limit: 6g
+    memswap_limit: 6g
+    command:
+      - dockerd
+      - -H
+      - tcp://0.0.0.0:2375
+      - --tls=false
+      # act gives every job its own WORKFLOW-* network and leaks one when a job is
+      # killed. dockerd's default pool runs out after a short run of leaks; 10.200.0.0/16
+      # carved into /24s gives 256 and collides with nothing a job needs to reach.
+      - --default-address-pool
+      - base=10.200.0.0/16,size=24
+    volumes:
+      - dind-data:/var/lib/docker
+      # BuildKit GC policy (10 GB cap); without it build cache grows forever.
+      - ./daemon.json:/etc/docker/daemon.json:ro
+    logging: *default-logging
+
+  # Image GC: dangling images, job containers dead >6h, stopped buildx builders, unused
+  # volumes and week-old build cache every 6h; a full `image prune -a` on Sundays.
+  # Rationale for each step is in docker/vps/04-runner/docker-compose.yaml.
+  forgejo-runner-prune:
+    # renovate: datasource=docker depName=docker
+    image: docker.io/library/docker:29-cli
+    container_name: forgejo-runner-prune
+    restart: unless-stopped
+    depends_on:
+      forgejo-runner-dind:
+        condition: service_started
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      DOCKER_HOST: tcp://forgejo-runner-dind:2375
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        until docker info >/dev/null 2>&1; do sleep 10; done
+        last_full=""
+        while true; do
+          sleep 21600
+          docker image prune -f
+          docker container prune -f --filter until=6h
+          docker ps -aq --filter status=exited --filter name=buildx_buildkit_ | xargs -r docker rm
+          docker volume prune -af
+          docker builder prune -af --filter until=168h
+          today=$$(date +%Y-%m-%d)
+          if [ "$$(date +%u)" = 7 ] && [ "$$today" != "$$last_full" ]; then
+            docker image prune -af && last_full=$$today
+          fi
+          docker system df
+        done
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    logging: *default-logging
+
+  forgejo-runner:
+    # renovate: datasource=docker depName=data.forgejo.org/forgejo/runner
+    image: data.forgejo.org/forgejo/runner:13.2.2
+    container_name: forgejo-runner
+    restart: unless-stopped
+    # Must exceed runner.shutdown_timeout below, or Docker SIGKILLs the runner mid-drain.
+    stop_grace_period: 31m
+    depends_on:
+      forgejo-runner-dind:
+        condition: service_started
+    environment:
+      DOCKER_HOST: tcp://forgejo-runner-dind:2375
+      FORGEJO_RUNNER_UUID: ${FORGEJO_RUNNER_UUID:?set in .env}
+      FORGEJO_RUNNER_TOKEN: ${FORGEJO_RUNNER_TOKEN:?set in .env}
+    # The image's built-in user owns /data; a fresh named volume inherits that.
+    user: "1000:1000"
+    working_dir: /data
+    volumes:
+      - data:/data
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        set -e
+        umask 077
+        cat > /data/runner-config.yml <<EOF
+        cache:
+          enabled: true
+          dir: /data/cache
+        container:
+          docker_host: tcp://forgejo-runner-dind:2375
+          # Job containers live in dind's nested bridge, whose gateway is the dind
+          # container, so host-gateway resolves to dind for jobs that use DOCKER_HOST.
+          options: >-
+            --add-host=forgejo-runner-dind:host-gateway
+          workdir_parent: /data/workdir
+        log:
+          level: info
+        runner:
+          capacity: 2
+          envs:
+            DOCKER_HOST: tcp://forgejo-runner-dind:2375
+          file: .runner
+          labels:
+            - ubuntu-latest:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+            - default:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+            - docker:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+            # Host-specific label for jobs that must run on baldur. Deliberately not
+            # "cluster" (in-cluster only) or "local" (NAS deploys, untested from here).
+            # No backticks in this heredoc: it is unquoted, so sh would run them.
+            - baldur:docker://ghcr.io/bjw-s-labs/forgejo-runner:ubuntu-24.04
+          timeout: 3h
+          # On SIGTERM stop taking jobs and let running ones finish (paired with
+          # stop_grace_period above).
+          shutdown_timeout: 30m
+        server:
+          connections:
+            forgejo:
+              url: https://forge.wynning.tech/
+              uuid: "$${FORGEJO_RUNNER_UUID}"
+              token: "$${FORGEJO_RUNNER_TOKEN}"
+        EOF
+        exec forgejo-runner daemon --config /data/runner-config.yml
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+    logging: *default-logging
+volumes:
+  dind-data:
+  data:

@@ -1,0 +1,56 @@
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: carol
+spec:
+  image: forge.wynning.tech/james/carol
+  interval: 1m
+  secretRef:
+    name: forge-wynning-tech-creds
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: carol
+spec:
+  imageRepositoryRef:
+    name: carol
+  policy:
+    semver:
+      range: ">=0.0.1-0"
+      #   range: ">=0.0.1" # or use 'alphabetical: {order: asc}' for date-stamped tags
+      # numerical:
+      #   order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: carol
+spec:
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: Flux Bot
+        email: flux@example.com
+      messageTemplate: |
+        carol: automated image update
+
+        Automation: {{ .AutomationObject.Namespace }}/{{ .AutomationObject.Name }}
+        {{- range .Changed.Changes }}
+        - {{ .OldValue }} -> {{ .NewValue }}
+        {{- end }}
+
+    push:
+      branch: main
+  update:
+    strategy: Setters
+    path: ./apps/carol/app

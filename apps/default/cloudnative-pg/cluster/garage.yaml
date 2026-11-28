@@ -1,0 +1,38 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: postgresql
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  # Shared by every CNPG cluster's barman-cloud archive (default, immich,
+  # memini, kritika, gotosocial). Hit 200Gi on 2026-11-04 and blocked WAL
+  # archiving on all of them (AccessDenied: Bucket size quota is reached);
+  # ~157Gi of that was the default cluster's 30d of ~5GiB daily base backups.
+  # NAS volume has >6TiB free.
+  quotas:
+    maxSize: 300Gi
+  globalAlias: postgresql
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: postgresql
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  importKey:
+    secretRef:
+      name: postgresql-garage
+    accessKeyIdKey: GARAGE_ACCESS_KEY
+    secretAccessKeyKey: GARAGE_SECRET_KEY
+  bucketPermissions:
+    - bucketRef:
+        name: postgresql
+      read: true
+      write: true

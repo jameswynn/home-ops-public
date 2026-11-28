@@ -1,0 +1,34 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app okb-bridge
+  namespace: &namespace okb
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  # The bridge is useless without CouchDB up.
+  dependsOn:
+    - name: couchdb
+      namespace: *namespace
+  # Plain PVC, no kopiur: the working tree is rebuilt from git on a fresh
+  # volume, and CouchDB (kopiur-backed) plus git history are the backups.
+  components:
+    - ../../../../components/volume-claim
+  postBuild:
+    substitute:
+      APP: *app
+      VOLUME_CAPACITY: 2Gi
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/okb/bridge/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

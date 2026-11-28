@@ -1,0 +1,43 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# Garage S3 (single node) + garage-webui. Data under /volume1/docker/garage; read README → garage
+# before touching the metadata DB (NOCOW requirement, Merkle repair tools in ./tools).
+services:
+  garage:
+    image: mirror.gcr.io/dxflrs/garage:v2.5.0
+    restart: unless-stopped
+    environment:
+      - TZ=America/Chicago
+      - GARAGE_ADMIN_TOKEN=${GARAGE_ADMIN_TOKEN}
+      - GARAGE_RPC_SECRET=${GARAGE_RPC_SECRET}
+    ports:
+      - "3900:3900" # s3 api
+      - "3901:3901" # rpc
+      # - "3902:3902" # s3 web
+      - "3903:3903" # admin
+    volumes:
+      - ./garage.toml:/etc/garage.toml
+      - /volume1/docker/garage/meta:/var/lib/garage/meta
+      - /volume1/docker/garage/data:/var/lib/garage/data
+
+  web-ui:
+    image: mirror.gcr.io/khairul169/garage-webui:1.1.0
+    restart: unless-stopped
+    environment:
+      - API_BASE_URL=http://garage:3903
+      - S3_ENDPOINT_URL=http://garage:3900
+      - TZ=America/Chicago
+      - API_ADMIN_KEY=${GARAGE_API_ADMIN_KEY}
+      - AUTH_USER_PASS=${GARAGE_AUTH_USER_PASS}
+    ports:
+      - "3909:3909"
+    volumes:
+      - ./garage.toml:/etc/garage.toml
+
+    healthcheck:
+      # image default interval is 300s; doco-cd waits max 3m for healthy
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:3909"]
+      interval: 30s
+      timeout: 2s
+      start_period: 15s
+      retries: 3

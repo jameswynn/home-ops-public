@@ -1,0 +1,67 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: flaresolverr
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: flaresolverr
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  values:
+    controllers:
+      flaresolverr:
+        pod:
+          labels:
+            descheduler.wynning.tech/rebalance: "true"
+        containers:
+          app:
+            image:
+              # Byparr: FlareSolverr-compatible API (/v1 on 8191). FlareSolverr
+              # v3.5.2 times out on current Cloudflare challenges (e.g.
+              # torrentdownloads.pro); Byparr solves them.
+              repository: ghcr.io/thephaseless/byparr
+              tag: 3.1.1@sha256:c66fa161187b8fa527bfad7eefa2647ea1c553f77df68cbffd6fe83366d1787b
+            # Byparr opens 8191 only after fetching a GeoIP database at startup.
+            # Cap each download attempt at 120s (3 attempts max); if it fails,
+            # Byparr starts anyway, and the fixed timezone/locale mean the
+            # database isn't needed.
+            env:
+              INVISIBLE_DOWNLOAD_DEADLINE: 120
+              BROWSER_TIMEZONE: America/Chicago
+              BROWSER_LOCALE: en-US
+            # TCP probes on the service port keep the pod out of the Service until
+            # it accepts connections. Startup budget (5s x 120 = 10 min) covers all
+            # three capped download attempts.
+            probes:
+              liveness:
+                enabled: true
+              readiness:
+                enabled: true
+              startup:
+                enabled: true
+                spec:
+                  periodSeconds: 5
+                  failureThreshold: 120
+            resources:
+              requests:
+                cpu: 25m
+                memory: 1536Mi
+              limits:
+                memory: 2Gi
+                ephemeral-storage: 1Gi
+    service:
+      app:
+        controller: flaresolverr
+        ports:
+          http:
+            port: 8191

@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: kopia-server-auth
+type: Opaque
+stringData:
+    KOPIA_SERVER_USERNAME: ENC[AES256_GCM,data:B2vpiiY=,iv:TkifhO2UrKaXISzcFeEeUWY//BJ3GDti4OltkecHtDE=,tag:QT0JriZxkDHqn+pttm32gQ==,type:str]
+    KOPIA_SERVER_PASSWORD: ENC[AES256_GCM,data:y+boGvRWaPoWKCJvNwTOh3U/TSsjJCIrlBksx02QeEHOJCdvKs0m,iv:n85GaVUUHeWfGY/cl2f/BIk/KCY76lTY+jsw5blazJc=,tag:KF4+4DiD5RocjotmAmMXRg==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBkU0F6VGhaZlVqK1c2OVdK
+            Z1NKWitsaEVxek90eDB1c3pTem5MY2tBQ2xrCnE4b1M2M0hCWVBIeXBzM0dmdzdt
+            OU1obUswRWxTVUFKbVpKNW9GR3FZckUKLS0tIG5FNmhaZTRDWGdjUHF3ZFZuV0dm
+            Umg2SmoraG5XYjhQK1RrVjhhTzdDVzAKae3aMmIt3sfUkwyQ8AzSO13R56LGDSzd
+            5oGUq0VvlLf78aq2XLTpfCt2haB9M1A1KL+6gQfNQSEFlqQB8Q1+kQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-11-03T03:05:13Z"
+    mac: ENC[AES256_GCM,data:6DIZqxjuRxDh4P+vNtDPle7t+u87FGDgH6ASg9nEJwzpC373Nnf90RUjXXVbS0Ml7YB8lwHvYG0KCIDCwCM4klZ7wrIiSp+cq5RKwVfuZ3MBDsJ5/hoCYHeUOc+JFW3NIwdhcNJjXF+5VBKs4B/ODG3zkCwtZFNP73kCEypTbkU=,iv:D1zVr85vKRGlrTBap+p0TWOa3Q0Bpq/EZFnz5lVcAaQ=,tag:t/qHp/H4FD9nCrDP7RuxVA==,type:str]
+    version: 3.13.3

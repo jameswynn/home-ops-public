@@ -1,0 +1,133 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+# Warm the zot pull-through cache with every image a PR adds or changes, so the
+# merge rolls out from the LAN instead of waiting on upstream pulls. Adapted from
+# onedr0p/home-ops ci.yaml (image-pull), which talosctl-pulls onto nodes; k3s
+# here mirrors docker.io/ghcr.io/quay.io/mirror.gcr.io through zot
+# (ansible/inventory/group_vars/all/registry.yaml), so filling zot is enough.
+#
+# A manifest GET through zot's on-demand sync blocks until the whole image
+# (manifest + every layer) is stored, so no layer bytes cross the runner.
+# Measured 2026-11-19: a cold 14-layer ghcr.io image took ~40s, then every blob
+# answered 200 from zot. Images on registries zot does not mirror are skipped.
+name: Image Prefetch
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ forgejo.workflow }}-${{ forgejo.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # renovate: datasource=github-releases depName=home-operations/flate
+  FLATE_VERSION: "0.8.0"
+  ZOT: https://zot.core.wynning.tech
+
+jobs:
+  prefetch:
+    name: Prefetch Images
+    # `cluster` exists only on the in-cluster runner (apps/dev/forgejo/runner),
+    # which reaches zot on the LAN; the VPS runner has no route to it.
+    runs-on: cluster
+    timeout-minutes: 60
+    # Best-effort: a cold cache is slower, never wrong. Never block a merge on it.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Install flate
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/home-operations/flate/releases/download/v${FLATE_VERSION}/flate_${FLATE_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin" flate
+          echo "$HOME/.local/bin" >> "$FORGEJO_PATH"
+
+      # Three things keep this step from failing on renders the PR never touched:
+      #
+      # - Diff against the merge base, not the tip of the base branch. A branch
+      #   behind main would otherwise "change" everything merged since it was cut:
+      #   flate re-rendered unrelated HRs, listed their old image versions, and
+      #   missed the PR's own bump (PR #2701, 13 commits behind: 4 stale images,
+      #   14 render failures, exit 1).
+      # - Supply dummy cluster-secrets. The real ones are SOPS-encrypted, so every
+      #   ${SECRET_*} renders empty offline and app-template's schema rejects e.g.
+      #   an NFS volume with `server: ""` (navidrome, jellyfin, yubal, ...). Then a
+      #   bump of such an app yields no image at all. Keys come from the SOPS file,
+      #   so new ones are covered; one Secret per namespace that pulls in
+      #   components/cluster-vars, plus flux-system.
+      # - Accept partial output. flate exits 1 when ANY producer fails, but still
+      #   prints the images of the ones that rendered. Some never render offline
+      #   (the private-apps entrypoint), and a PR touching flux/ or components/
+      #   re-renders the lot. Fail only when there is no usable JSON.
+      - name: Extract Images
+        env:
+          BASE: ${{ forgejo.event.pull_request.base.ref }}
+        run: |
+          keys=$(grep -oE '^\s+SECRET_[A-Z0-9_]+:' components/cluster-vars/cluster-secrets.sops.yaml | tr -d ' :')
+          for ns in flux-system $(grep -l 'components/cluster-vars' apps/*/kustomization.yaml core/*/kustomization.yaml | xargs sed -n 's/^namespace: *//p' | sort -u); do
+            printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: cluster-secrets\n  namespace: %s\nstringData:\n' "$ns"
+            for k in $keys; do printf '  %s: example.com\n' "$k"; done
+          done > "$RUNNER_TEMP/supply.yaml"
+
+          rc=0
+          flate diff images --base "$(git merge-base "origin/${BASE}" HEAD)" --supply "$RUNNER_TEMP/supply.yaml" \
+            -o json --no-progress > images.json 2> flate.log || rc=$?
+          if ! jq -e 'type == "array"' images.json >/dev/null 2>&1; then
+            cat flate.log; exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::flate exited $rc; images from producers that failed to render are missing"
+            grep -E '✗' flate.log || true
+          fi
+          jq -r '.[]' images.json | sort -u > images.txt
+          echo "$(wc -l < images.txt) changed image(s):"
+          cat images.txt
+
+      - name: Warm zot
+        run: |
+          warm() {
+            local ref=$1 repo tag host accept
+            accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
+            # Normalise Docker Hub short names: nginx -> docker.io/library/nginx.
+            # Only a first path segment can be a registry host.
+            if [[ $ref != */* ]]; then ref="docker.io/library/$ref"
+            else
+              case "${ref%%/*}" in
+                *.*|*:*|localhost) ;;
+                *) ref="docker.io/$ref" ;;
+              esac
+            fi
+            host=${ref%%/*}
+            # docker.io/nginx is docker.io/library/nginx, as containerd resolves it.
+            [[ $host == docker.io && ${ref#docker.io/} != */* ]] && ref="docker.io/library/${ref#docker.io/}"
+            case "$host" in
+              docker.io|ghcr.io|quay.io|mirror.gcr.io) ;;
+              *) echo "skip  $ref (zot does not mirror $host)"; return 0 ;;
+            esac
+            # Digest wins over tag; a bare name means :latest.
+            if [[ $ref == *@* ]]; then repo=${ref%@*}; tag=${ref#*@}; repo=${repo%:*}
+            elif [[ ${ref##*/} == *:* ]]; then repo=${ref%:*}; tag=${ref##*:}
+            else repo=$ref; tag=latest; fi
+            local url="$ZOT/v2/$repo/manifests"
+            # The gateway in front of zot gives up (502) before zot finishes
+            # syncing a large image; zot keeps copying, so retry until it serves.
+            # curl --retry treats 502/503/504 as transient.
+            local -a get=(curl -fsS --max-time 1800 --retry 10 --retry-delay 30 -H "Accept: $accept")
+            local body d
+            if ! body=$("${get[@]}" "$url/$tag"); then
+              echo "FAIL  $ref"; return 1
+            fi
+            # Multi-arch: request the node platforms' manifests too, so zot has
+            # synced them whichever request triggers its copy.
+            for d in $(jq -r '.manifests[]? | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64")) | .digest' <<<"$body"); do
+              "${get[@]}" -o /dev/null "$url/$d" || { echo "FAIL  $ref ($d)"; return 1; }
+            done
+            echo "ok    $ref"
+          }
+          export -f warm
+          [ -s images.txt ] || { echo "No changed images."; exit 0; }
+          xargs -P 4 -I{} bash -c 'warm "$1"' _ {} < images.txt

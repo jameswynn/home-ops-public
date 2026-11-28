@@ -1,0 +1,53 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: flux-operator
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: flux-operator
+  interval: 1h
+  # The operator pod has taken >5m to start; give Helm room and retry.
+  timeout: 10m
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    serviceMonitor:
+      create: true
+    web:
+      networkPolicy:
+        create: false
+      config:
+        # baseURL, clientID, clientSecret and issuerURL come from valuesFrom.
+        # Don't set them here: inline values override valuesFrom.
+        authentication:
+          type: OAuth2
+          oauth2:
+            provider: OIDC
+      authentication:
+        type: OAuth2
+        oauth2:
+          provider: OIDC
+          clientID: fluxcd-operator
+          issuerURL: https://auth.wynning.tech/application/o/fluxcd-operator/
+
+  valuesFrom:
+    - kind: Secret
+      name: fluxcd-operator
+      valuesKey: FLUXCD_OPERATOR_OIDC_CLIENT_ID
+      targetPath: web.config.authentication.oauth2.clientID
+    - kind: Secret
+      name: fluxcd-operator
+      valuesKey: FLUXCD_OPERATOR_OIDC_CLIENT_SECRET
+      targetPath: web.config.authentication.oauth2.clientSecret
+    - kind: Secret
+      name: fluxcd-operator
+      valuesKey: FLUXCD_OPERATOR_OIDC_ISSUER
+      targetPath: web.config.authentication.oauth2.issuerURL
+    - kind: Secret
+      name: fluxcd-operator
+      valuesKey: FLUXCD_OPERATOR_BASE_URL
+      targetPath: web.config.baseURL

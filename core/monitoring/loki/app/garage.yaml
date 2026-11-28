@@ -1,0 +1,77 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: &bucket loki-chunks
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  # Hit 20Gi on 2026-11-14 13:00 and took the write path down for 28h: the
+  # ingesters could not flush (AccessDenied: Bucket size quota is reached), went
+  # unhealthy, and every push got 500. Retention cannot dig the bucket out of
+  # that state: the compactor has to PUT rewritten index tables and delete
+  # markers before it may delete a single chunk, and PUT is exactly what the
+  # quota rejects. So the quota has to sit well above steady state, not at it.
+  # At 7d retention the bucket held ~2.5GiB/day until an incident (longhorn
+  # degraded 46 volumes, longhorn-manager at 3.9k lines/min) tripled ingest
+  # for two days. 60Gi is ~3 weeks of steady state or ~1 week of that; the NAS
+  # volume has >6TiB free. Same lesson as the postgresql bucket (2026-11-04).
+  quotas:
+    maxSize: 60Gi
+  globalAlias: *bucket
+# ---
+# # yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+# apiVersion: garage.rajsingh.info/v1beta1
+# kind: GarageBucket
+# metadata:
+#   name: &bucket loki-ruler
+# spec:
+#   clusterRef:
+#     name: garage-nas
+#     namespace: default
+#   quotas:
+#     maxSize: 1Gi
+#   globalAlias: *bucket
+# ---
+# # yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+# apiVersion: garage.rajsingh.info/v1beta1
+# kind: GarageBucket
+# metadata:
+#   name: &bucket loki-admin
+# spec:
+#   clusterRef:
+#     name: garage-nas
+#     namespace: default
+#   quotas:
+#     maxSize: 1Gi
+#   globalAlias: *bucket
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: loki
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  importKey:
+    secretRef:
+      name: loki-garage
+    accessKeyIdKey: GARAGE_ACCESS_KEY
+    secretAccessKeyKey: GARAGE_SECRET_KEY
+  bucketPermissions:
+    - bucketRef:
+        name: loki-chunks
+      read: true
+      write: true
+  # - bucketRef:
+  #     name: loki-admin
+  #   read: true
+  #   write: true
+  # - bucketRef:
+  #     name: loki-ruler
+  #   read: true
+  #   write: true

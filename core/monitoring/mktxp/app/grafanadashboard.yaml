@@ -1,0 +1,20 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/grafana.integreatly.org/grafanadashboard_v1beta1.json
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: mikrotik-mktxp
+spec:
+  allowCrossNamespaceImport: true
+  instanceSelector:
+    matchLabels:
+      grafana.internal/instance: grafana
+  folder: Network
+  datasources:
+    - inputName: DS_PROMETHEUS
+      datasourceName: Prometheus
+  # Upstream mktxp dashboard: system, DHCP, interfaces, firewall, BGP-adjacent
+  # routes, and Kid Control per-device transfer.
+  grafanaCom:
+    id: 13679
+    revision: 32

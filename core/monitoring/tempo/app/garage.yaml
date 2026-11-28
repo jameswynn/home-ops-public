@@ -1,0 +1,33 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagebucket_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: &bucket tempo
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  quotas:
+    maxSize: 20Gi
+  globalAlias: *bucket
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/garage.rajsingh.info/garagekey_v1beta1.json
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: tempo
+spec:
+  clusterRef:
+    name: garage-nas
+    namespace: default
+  importKey:
+    secretRef:
+      name: tempo-garage
+    accessKeyIdKey: GARAGE_ACCESS_KEY
+    secretAccessKeyKey: GARAGE_SECRET_KEY
+  bucketPermissions:
+    - bucketRef:
+        name: tempo
+      read: true
+      write: true

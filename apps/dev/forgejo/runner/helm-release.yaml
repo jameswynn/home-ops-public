@@ -1,0 +1,387 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: &app forgejo-runner
+  namespace: dev
+spec:
+  interval: 5m
+  chartRef:
+    kind: OCIRepository
+    name: *app
+  install:
+    timeout: 10m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 10m
+    remediation:
+      retries: 3
+  dependsOn:
+    - name: forgejo
+      namespace: dev
+  values:
+    # app-template 5.x would create ServiceAccount/forgejo-runner, which collides with
+    # the non-Helm one in rbac.yaml (the runner reaches the API via its token Secret).
+    global:
+      createDefaultServiceAccount: false
+    # fsGroup/fsGroupChangePolicy are POD-level fields — they are not valid in a
+    # container securityContext, which is where they used to be. runAsUser is set
+    # per-container instead of here: the dind sidecar must run as root, so a
+    # pod-wide runAsUser: 1000 would break it.
+    defaultPodOptions:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      # Kubernetes SIGKILLs the pod when this expires, whatever the containers
+      # are doing. It must outlast runner.shutdown_timeout (30m, resources/
+      # config.yaml) plus the daemon's own teardown, or a rollout still loses
+      # the job it was supposed to let finish.
+      terminationGracePeriodSeconds: 1920
+      # Lets the dind container's preStop see the runner's process (pgrep) and
+      # hold dockerd until it has exited. Nothing else in the pod cares.
+      shareProcessNamespace: true
+    service:
+      main:
+        controller: main
+        enabled: false
+    controllers:
+      main:
+        type: statefulset
+        replicas: 1
+        # The generated ConfigMap no longer carries a name hash, so a config edit
+        # will not roll this StatefulSet on its own — reloader does it instead.
+        annotations:
+          reloader.stakater.com/auto: "true"
+        initContainers:
+          # No `register` step: this runner is created in Forgejo's UI, which issues a
+          # persistent UUID+token pair. Those are handed to the daemon directly through
+          # `server.connections` — the same model as the VPS runner. A registration
+          # token would be single-use and would need re-minting on every rebuild.
+          #
+          # The credentials cannot live in the ConfigMap, so the declarative part of
+          # the config stays in resources/config.yaml and this container appends the
+          # secret-derived block to produce the file the daemon actually reads.
+          config:
+            image: &image
+              repository: code.forgejo.org/forgejo/runner
+              tag: 13.2.2
+              pullPolicy: IfNotPresent
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+            # `$${VAR}`, not `${VAR}`: Flux runs envsubst over every manifest (the
+            # cluster-wide postBuild patch in flux/apps.yaml) and cannot distinguish a
+            # shell variable from one of its own. In strict mode an unknown name fails
+            # the whole build — "variable not set (strict mode): FORGEJO_INSTANCE_URL".
+            # The `$$` escape makes envsubst emit a literal `${VAR}` for the shell.
+            command:
+              - sh
+              - -c
+              - |
+                set -e
+                umask 077
+                cp /config/config.yaml /data/runner-config.yml
+                cat >> /data/runner-config.yml <<EOF
+
+                server:
+                  connections:
+                    forgejo:
+                      url: "$${FORGEJO_INSTANCE_URL}"
+                      uuid: "$${RUNNER_UUID}"
+                      token: "$${RUNNER_TOKEN}"
+                EOF
+                echo "Wrote /data/runner-config.yml for $${FORGEJO_INSTANCE_URL}"
+            env:
+              # The in-cluster service, NOT forge.wynning.tech — this keeps CI off the
+              # public path entirely: no towonel tunnel, no Coraza WAF (which 403s
+              # gzipped git-upload-pack bodies), no anti-scraper rate limit.
+              - name: FORGEJO_INSTANCE_URL
+                value: http://forgejo-http.dev.svc.cluster.local:3000
+              - name: RUNNER_UUID
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: UUID
+              - name: RUNNER_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: *app
+                    key: TOKEN
+        containers:
+          main:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+            image: *image
+            # Waiting on cert.pem alone loses a race: dind's entrypoint generates the
+            # certs and only then starts dockerd, so the file exists while the socket is
+            # still closed and the daemon exits 1 with "cannot ping the docker daemon".
+            # Probe the port as well. busybox nc is in this image and `nc -z` returns 0
+            # for a listening port, 1 for a closed one (both verified in the pod).
+            command:
+              - sh
+              - -c
+              - |
+                until [ -f /certs/client/cert.pem ] && nc -z localhost 2376; do
+                  echo "waiting for docker daemon..."
+                  sleep 2
+                done
+                exec forgejo-runner daemon --config /data/runner-config.yml
+            env:
+              - name: DOCKER_HOST
+                value: tcp://localhost:2376
+              - name: DOCKER_CERT_PATH
+                value: /certs/client
+              - name: DOCKER_TLS_VERIFY
+                value: "1"
+            resources:
+              requests:
+                memory: 100Mi
+                cpu: 10m
+                ephemeral-storage: 200Mi
+              limits:
+                memory: 1Gi
+                ephemeral-storage: 500Mi
+          daemon:
+            image:
+              repository: mirror.gcr.io/docker
+              tag: 29.10.1-dind
+            # dind needs root; it is explicitly exempt from the 1000 used elsewhere.
+            securityContext:
+              privileged: true
+              runAsUser: 0
+            # All containers in a pod get SIGTERM at once. The runner drains on
+            # its own (shutdown_timeout), but dockerd would already be gone from
+            # under its running job. Hold dockerd until the runner process has
+            # exited -- that is the one signal that means "drained or gave up":
+            # counting job containers is wrong between steps and between jobs,
+            # and a Docker API error would read as zero. Needs the shared PID
+            # namespace set in defaultPodOptions. Bounded by the same budget as
+            # the runner so a wedged job cannot block the rollout forever.
+            # `$$i`, not `$i`: Flux runs envsubst over this file (see the runner
+            # config below), and it substitutes bare `$VAR` as well as `${VAR}`.
+            lifecycle:
+              preStop:
+                exec:
+                  command:
+                    - sh
+                    - -c
+                    - |
+                      i=0
+                      while [ $$i -lt 372 ]; do
+                        pgrep -x forgejo-runner >/dev/null || exit 0
+                        sleep 5
+                        i=$$((i + 1))
+                      done
+            # The image entrypoint prepends `dockerd` when the first arg is a flag.
+            #
+            # act gives every job its own WORKFLOW-* network and only removes it on a
+            # clean exit; a killed job (OOM, timeout, daemon restart) leaks one. dockerd's
+            # default pool is ~15 /16s under 172.17.0.0/12, so a short run of leaks ends
+            # in "all predefined address pools have been fully subnetted" and every new
+            # job dies before checkout (VPS runner, 2026-11-10). 10.200.0.0/16 carved
+            # into /24s gives 256 networks; the range collides with nothing routed here
+            # (LAN 10.11/10.1, pods 10.42/16, services 10.43/16, tailnet 100.64/10).
+            args:
+              - --default-address-pool
+              - base=10.200.0.0/16,size=24
+            env:
+              - name: DOCKER_TLS_CERTDIR
+                value: /certs
+            # Job containers spawned by dind run inside THIS container's cgroup — they are
+            # not pods and get no allocation of their own, so every image pull, layer
+            # extract, buildkit solve and job process is charged against this limit.
+            #
+            # It used to be 200Mi. Idle dockerd+containerd+buildkit alone is ~120Mi, which
+            # left ~80Mi for all concurrent CI work: the cgroup sat pinned at its ceiling
+            # for hours at a time, the kernel OOM-killed inside it 7 times in a day, and
+            # the resulting reclaim thrash showed up as 5049s of memory stall on the node
+            # in 24h against <=71s on every other node.
+            #
+            # Those kills are invisible to Kubernetes. The victims live in a nested cgroup
+            # dockerd created, so cAdvisor never attributes them to this pod — no
+            # OOMKilled status, no event. Only node_vmstat_oom_kill (node-exporter,
+            # /proc/vmstat) records them, so check that metric before believing that a
+            # runner problem "isn't memory".
+            #
+            # 4Gi against runner.capacity: 2 is ~2Gi per concurrent job, the same per-job
+            # budget the VPS runner gets (2G for the whole stack at capacity 1).
+            resources:
+              requests:
+                memory: 512Mi
+                cpu: 10m
+                ephemeral-storage: 200Mi
+              limits:
+                memory: 4Gi
+                ephemeral-storage: 500Mi
+          # Image GC. BuildKit's gc policy (resources/daemon.json) bounds the build
+          # cache, but images pulled or built by jobs sit in the containerd store
+          # and nothing in dockerd ages them out. This ran unbounded for 85 days:
+          # 59 images (26 GB) and 1671 build-cache records (122 GB) on a PVC
+          # nominally 10Gi — local-path does not enforce size, so the node's
+          # /storage (Longhorn's disk) absorbed it.
+          #
+          # A sidecar rather than a CronJob: dind's TLS certs live in a per-pod
+          # emptyDir and the daemon listens on pod-local 2376, so a separate pod
+          # could not reach it without a Service and shared certs. Nothing here
+          # needs RBAC or the API server.
+          #
+          # Docker has no last-used time for images: `image prune --filter until=`
+          # keys on the image's CREATED time, so an upstream job image built months
+          # ago (node, golang, the forgejo runner's own tool images) would be
+          # evicted on every pass between jobs and re-pulled each time. So the
+          # 6-hourly pass only drops dangling images (superseded tags from
+          # `docker build -t`) and old build cache; the full `image prune -a`
+          # runs on the first pass of each Sunday (wall clock, not an uptime
+          # counter — the pod restarts on every image bump and kured reboot, so
+          # a counter could reset forever). One re-pull a week through zot, and
+          # `-a` is still what caps accumulation. The active job's image is
+          # in use and skipped either way. `builder prune` is belt-and-braces
+          # with the same 7d the gc policy's second tier uses, for the case
+          # where the policy is edited to something that never triggers.
+          #
+          # Exited job containers too: act removes a job's container when the job
+          # ends, but a job killed mid-run (OOM, disk full, runner restart) leaves
+          # FORGEJO-ACTIONS-TASK-* behind with its whole rootfs. heimdall carried
+          # 19 of them, 33 GB, on 2026-11-10 and 23 more the next day. 6h is twice
+          # the runner timeout (3h), so nothing live is touched.
+          #
+          # buildx builders: docker/setup-buildx-action with the docker-container
+          # driver creates a `buildx_buildkit_builder-<uuid>0` container per job and
+          # only removes it in a post step a killed job never reaches. Each holds
+          # its cache in a named volume, and `docker builder prune` sees only the
+          # DEFAULT builder, so none of this was being reclaimed (11 builders,
+          # 57 volumes, 15 GB on heimdall 2026-11-11). Builders are stopped between
+          # jobs; a running one belongs to a live job and `rm` without -f leaves it.
+          # Volumes go every pass for the same reason — unused means no job holds
+          # them — not weekly.
+          prune:
+            image:
+              repository: mirror.gcr.io/docker
+              tag: 29.10.1-cli
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            command:
+              - sh
+              - -c
+              - |
+                until docker info >/dev/null 2>&1; do sleep 10; done
+                last_full=""
+                while true; do
+                  sleep 21600
+                  docker image prune -f
+                  docker container prune -f --filter until=6h
+                  docker ps -aq --filter status=exited --filter name=buildx_buildkit_ | xargs -r docker rm
+                  docker volume prune -af
+                  docker builder prune -af --filter until=168h
+                  today=$(date +%Y-%m-%d)
+                  if [ "$(date +%u)" = 7 ] && [ "$today" != "$last_full" ]; then
+                    docker image prune -af && last_full=$today
+                  fi
+                  docker system df
+                done
+            env:
+              - name: DOCKER_HOST
+                value: tcp://localhost:2376
+              - name: DOCKER_CERT_PATH
+                value: /certs/client
+              - name: DOCKER_TLS_VERIFY
+                value: "1"
+            resources:
+              requests:
+                memory: 16Mi
+                cpu: 5m
+                ephemeral-storage: 10Mi
+              limits:
+                memory: 64Mi
+                ephemeral-storage: 50Mi
+
+    persistence:
+      docker-certs:
+        enabled: true
+        type: emptyDir
+        sizeLimit: 100Mi
+        globalMounts:
+          - path: /certs
+      # local-path does NOT enforce `size` — it is a bind mount of a directory
+      # on the node's /storage, and df inside the pod shows the whole
+      # filesystem. The number here is documentation of the budget the GC
+      # policy (resources/daemon.json, 20 GB build cache) plus the image prune
+      # sidecar are meant to hold: ~20 GB cache + ~10 GB live images. Nothing
+      # measures the directory itself (no exporter sees hostPath volumes); the
+      # backstop is Longhorn's LonghornDiskStorageWarning at 70% of /storage.
+      # Mounted in main and daemon only — the prune sidecar talks to dockerd
+      # over TCP and has no business on the data directory.
+      docker-data:
+        enabled: true
+        accessMode: ReadWriteOnce
+        storageClass: local-path
+        size: 30Gi
+        advancedMounts:
+          main:
+            main:
+              - path: /var/lib/docker
+            daemon:
+              - path: /var/lib/docker
+      # advancedMounts, not globalMounts: the `config` initContainer writes
+      # /data/runner-config.yml and the daemon reads it, so both need naming.
+      runner-data:
+        enabled: true
+        accessMode: ReadWriteOnce
+        storageClass: local-path
+        size: 10Gi
+        advancedMounts:
+          main:
+            config:
+              - path: /data
+            main:
+              - path: /data
+      # Only the initContainer reads this — it is the template that gets the
+      # credentials appended. The daemon reads the generated /data/runner-config.yml.
+      config:
+        enabled: true
+        type: configMap
+        name: forgejo-runner-configmap
+        advancedMounts:
+          main:
+            config:
+              - path: /config
+      # Mirror config for the dind daemon. Docker 29's containerd image store reads
+      # /etc/docker/certs.d/<registry>/hosts.toml on every pull (no restart needed).
+      registry-mirrors:
+        enabled: true
+        type: configMap
+        name: forgejo-runner-registry-mirrors
+        items:
+          - key: registry-docker.io.toml
+            path: docker.io/hosts.toml
+          - key: registry-ghcr.io.toml
+            path: ghcr.io/hosts.toml
+          - key: registry-quay.io.toml
+            path: quay.io/hosts.toml
+          - key: registry-mirror.gcr.io.toml
+            path: mirror.gcr.io/hosts.toml
+        advancedMounts:
+          main:
+            daemon:
+              - path: /etc/docker/certs.d
+                readOnly: true
+      # BuildKit garbage-collection policy. dockerd reads /etc/docker/daemon.json
+      # at startup only, so a change here needs the pod rolled (reloader does it).
+      daemon-config:
+        enabled: true
+        type: configMap
+        name: forgejo-runner-daemon-config
+        advancedMounts:
+          main:
+            daemon:
+              - path: /etc/docker/daemon.json
+                subPath: daemon.json
+                readOnly: true

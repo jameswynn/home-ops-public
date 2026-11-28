@@ -1,0 +1,97 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/prometheusrule_v1.json
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cloudnative-pg-rules
+  labels:
+    prometheus: k8s
+    role: alert-rules
+spec:
+  groups:
+    - name: cloudnative-pg.rules
+      rules:
+        - alert: LongRunningTransaction
+          annotations:
+            description: Pod {{ $labels.pod }} is taking more than 5 minutes (300 seconds) for a query.
+            summary: A query is taking longer than 5 minutes.
+          expr: |-
+            cnpg_backends_max_tx_duration_seconds > 300
+          for: 1m
+          labels:
+            severity: warning
+        - alert: BackendsWaiting
+          annotations:
+            description: Pod {{ $labels.pod }} has been waiting for longer than 5 minutes
+            summary: If a backend is waiting for longer than 5 minutes
+          expr: |-
+            cnpg_backends_waiting_total > 300
+          for: 1m
+          labels:
+            severity: warning
+        - alert: PGDatabase
+          annotations:
+            description: Over 150,000,000 transactions from frozen xid on pod {{ $labels.pod }}
+            summary: Number of transactions from the frozen XID to the current one
+          expr: |-
+            cnpg_pg_database_xid_age > 150000000
+          for: 1m
+          labels:
+            severity: warning
+        - alert: PGReplication
+          annotations:
+            description: Standby is lagging behind by over 300 seconds (5 minutes)
+            summary: The standby is lagging behind the primary
+          expr: |-
+            cnpg_pg_replication_lag > 300
+          for: 1m
+          labels:
+            severity: warning
+        - alert: LastFailedArchiveTime
+          annotations:
+            description: Archiving failed for {{ $labels.pod }}
+            summary: Checks the last time archiving failed. Will be < 0 when it has not failed.
+          expr: |-
+            (cnpg_pg_stat_archiver_last_failed_time - cnpg_pg_stat_archiver_last_archived_time) > 1
+          for: 1m
+          labels:
+            severity: warning
+        # Use the barman-cloud plugin's own metrics, not cnpg_collector_*.
+        # The in-tree collector metrics stopped updating when the clusters
+        # moved to the plugin and still report the pre-migration timestamp.
+        # Aggregating by (namespace, job) collapses the per-replica series
+        # into one alert per cluster.
+        - alert: CNPGBackupMissing
+          annotations:
+            description: >-
+              CNPG cluster {{ $labels.job }} has never produced a successful base backup.
+              WAL archiving is useless without one to replay onto, so this cluster cannot
+              be restored. Check the ScheduledBackup sets method: plugin.
+            summary: CNPG cluster {{ $labels.job }} has no base backup at all
+          expr: |-
+            max by (namespace, job) (barman_cloud_cloudnative_pg_io_last_available_backup_timestamp) == 0
+          for: 30m
+          labels:
+            severity: critical
+        - alert: CNPGBackupStale
+          annotations:
+            description: >-
+              CNPG cluster {{ $labels.job }} has not completed a base backup in over 48
+              hours. Backups are scheduled daily, so this means runs are failing silently.
+            summary: CNPG cluster {{ $labels.job }} has no recent base backup
+          expr: |-
+            (time() - max by (namespace, job) (barman_cloud_cloudnative_pg_io_last_available_backup_timestamp) > 172800)
+            and
+            (max by (namespace, job) (barman_cloud_cloudnative_pg_io_last_available_backup_timestamp) > 0)
+          for: 30m
+          labels:
+            severity: critical
+        - alert: DatabaseDeadlockConflicts
+          annotations:
+            description: There are over 10 deadlock conflicts in {{ $labels.pod }}
+            summary: Checks the number of database conflicts
+          expr: |-
+            cnpg_pg_stat_database_deadlocks > 10
+          for: 1m
+          labels:
+            severity: warning

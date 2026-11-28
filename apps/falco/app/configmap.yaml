@@ -1,0 +1,55 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-rules
+data:
+  rules.yaml: |-
+    customRules:
+      custom-rules.yaml: |-
+        - macro: user_known_contact_k8s_api_server_activities
+          condition: >
+            or container.image.repository in (
+              quay.io/kiwigrid/k8s-sidecar,
+              docker.io/kiwigrid/k8s-sidecar,
+              docker.io/longhornio/longhorn-manager,
+              docker.io/longhornio/longhorn-share-manager,
+              docker.io/longhornio/longhorn-instance-manager,
+              docker.io/longhornio/csi-resizer,
+              quay.io/jetstack/cert-manager-webhook,
+              quay.io/metallb/controller,
+              docker.io/falcosecurity/k8s-metacollector,
+              quay.io/metallb/speaker
+            )
+          override:
+            condition: append
+
+        - macro: known_drop_and_execute_activities
+          condition: >
+            or (container.image.repository == "ghcr.io/flaresolverr/flaresolverr" and proc.name == "chromedriver")
+            or (container.image.repository == "docker.io/library/alpine" and proc.name == "stunnel" and k8s.ns.name == "monitoring" and proc.exepath == "/usr/bin/stunnel")
+            or (container.image.repository == "docker.io/library/alpine" and proc.name == "c_rehash" and k8s.ns.name == "monitoring" and proc.exepath == "/usr/bin/c_rehash")
+            or (container.image.repository == "docker.io/library/alpine" and proc.name == "update-ca-certificates" and k8s.ns.name == "monitoring" and proc.exepath == "/usr/sbin/update-ca-certificates")
+          override:
+            condition: append
+
+        - macro: user_known_stand_streams_redirect_activities
+          condition: or (container.image.repository == "docker.io/longhornio/longhorn-manager" and proc.name == "longhorn")
+          override:
+            condition: append
+
+        - macro: allowed_clear_log_files
+          condition: or (container.image.repository == "docker.io/longhornio/longhorn-instance-manager" and proc.name == "tee" and fd.name == "/var/log/tgtd.log")
+          override:
+            condition: append
+
+        - macro: user_read_sensitive_file_conditions
+          condition: >
+            or (container.image.repository == "docker.io/library/alpine" and proc.name == "adduser" and k8s.ns.name == "monitoring")
+          override:
+            condition: append
+
+        - list: user_known_packet_socket_binaries
+          items: [speaker]
+          override:
+            items: append

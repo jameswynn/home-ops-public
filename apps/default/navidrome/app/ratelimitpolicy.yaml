@@ -1,0 +1,40 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/gateway.envoyproxy.io/backendtrafficpolicy_v1alpha1.json
+# Navidrome has no login lockout, and the Subsonic API (/rest/*) checks
+# credentials on every request, so both are brute-force surfaces. Per client IP
+# (real IP survives towonel via proxy protocol + clientIPDetection).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: navidrome-auth-ratelimit
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: navidrome-main
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - clientSelectors:
+            - path:
+                type: PathPrefix
+                value: /auth/login
+              sourceCIDR:
+                type: Distinct
+                value: 0.0.0.0/0
+          limit:
+            requests: 10
+            unit: Minute
+        # Generous: Subsonic clients fire a burst of getCoverArt/stream calls
+        # while browsing; this only stops sustained credential guessing.
+        - clientSelectors:
+            - path:
+                type: PathPrefix
+                value: /rest/
+              sourceCIDR:
+                type: Distinct
+                value: 0.0.0.0/0
+          limit:
+            requests: 600
+            unit: Minute

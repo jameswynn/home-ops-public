@@ -1,0 +1,17 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/kustomization
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Dedicated namespace: kritika serve's Role can read every Secret in its own
+# namespace (it creates the per-run Secrets), so nothing else may live here.
+namespace: kritika-system
+resources:
+  - kritika/ks.yaml
+components:
+  - ../../components/common
+  - ../../components/cluster-vars
+  # No ../../components/limits on purpose. Its LimitRange gives every container a
+  # 64Mi ephemeral-storage default limit, and kritika's runner pods take only
+  # pod-level cpu/memory (chart: runner.podTemplate.spec.resources), so a runner
+  # cloning the repo and installing flate could not override it and would be
+  # evicted. Each workload here sets its own ephemeral-storage explicitly.

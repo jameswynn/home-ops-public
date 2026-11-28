@@ -1,0 +1,35 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app vaultwarden
+  namespace: &namespace vaultwarden
+spec:
+  targetNamespace: vaultwarden
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/vaultwarden/vaultwarden/app
+  components:
+    - ../../../../components/kopiur
+  postBuild:
+    substitute:
+      APP: *app
+      # Vault data lives in CNPG; this volume holds rsa_key.pem (token signing),
+      # attachments, sends and the icon cache.
+      KOPIUR_CLAIM: vaultwarden-data-pvc
+      KOPIUR_CAPACITY: 10Gi
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # wait: true would also wait on the kopiur Restore, which stays Reconciling
+  # until a PVC claims it; gate on the HelmRelease only.
+  wait: false
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: *app
+      namespace: *namespace

@@ -1,0 +1,15 @@
+---
+# Work volume only (query log + stats; Longhorn backups suffice). The config
+# claim (adguard-secondary-config) comes from components/kopiur in ../ks.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: adguard-secondary-work
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: longhorn

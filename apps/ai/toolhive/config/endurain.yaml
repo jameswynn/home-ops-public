@@ -1,0 +1,20 @@
+---
+# ToolHive consumes the private in-cluster MCP service and adds its own OIDC/Cedar
+# authorization at the aggregate endpoint. The backend bearer token is injected
+# only on ToolHive's outbound request.
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServerEntry
+metadata:
+  name: endurain
+spec:
+  remoteUrl: http://endurain-mcp.ai.svc.cluster.local:8000/mcp
+  transport: streamable-http
+  allowPrivateEndpoint: true
+  groupRef:
+    name: all
+  headerForward:
+    addHeadersFromSecret:
+      - headerName: Authorization
+        valueSecretRef:
+          name: endurain-mcp-toolhive
+          key: ENDURAIN_MCP_AUTHORIZATION

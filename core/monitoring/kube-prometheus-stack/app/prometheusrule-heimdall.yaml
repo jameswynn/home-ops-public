@@ -1,0 +1,58 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/monitoring.coreos.com/prometheusrule_v1.json
+#
+# heimdall (the OVH VPS, docker/vps) is not a scrape target: its prometheus-agent
+# remote_writes into this Prometheus over the tailnet. When that push stops, every
+# heimdall series just goes stale — `up` never becomes 0, so TargetDown cannot see
+# it. 2026-11-05: its tailnet key expired, telemetry stopped at 12:04 UTC, and the
+# host sat with a full disk and an OOM loop for five days before anyone noticed.
+# absent_over_time is the only shape that fires on "stopped reporting".
+#
+# Two alerts rather than one: remote_write dying (tailnet, key expiry, agent OOM)
+# looks identical from here to the whole host being down, but the public edge
+# (towonel) kept working throughout, so "dark" is not "down" — the summary says so.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: heimdall-rules
+spec:
+  groups:
+    - name: heimdall.rules
+      rules:
+        - alert: HeimdallTelemetryAbsent
+          expr: |
+            absent_over_time(up{instance="heimdall", job="vps-node"}[20m])
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: heimdall has not pushed metrics for 30 minutes
+            description: >-
+              No remote_write samples from the OVH VPS's prometheus-agent. Either
+              the host is down, or (more likely) its tailnet path is: check
+              `tailscale status` for heimdall — expired node key, lost tag:vps
+              (rules 2-3 in tailscale.md), or tailscaled OOM-killed. Loki shipping
+              and CrowdSec's Loki tail go dark at the same moment. towonel does
+              not depend on the tailnet, so public ingress can look fine while
+              this fires. Runbook: docker/vps/README.md, tailscale.md.
+
+        # The Nov 3 disk fill was visible for two days before the tailnet died;
+        # the kube-prometheus-stack NodeFilesystem* rules do not cover this host
+        # (job="vps-node", not "node-exporter"). 20% on a 72 GB root is ~14 GB,
+        # which is one bad CI afternoon of headroom (17 GB vanished in <12h).
+        - alert: HeimdallRootFilesystemLow
+          expr: |
+            node_filesystem_avail_bytes{instance="heimdall", mountpoint="/"}
+              / node_filesystem_size_bytes{instance="heimdall", mountpoint="/"} < 0.20
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: heimdall root filesystem under 20% free ({{ $value | humanizePercentage }})
+            description: >-
+              Usual offender is the Forgejo runner's dind volume
+              (04-runner_dind-data): exited FORGEJO-ACTIONS-TASK-* containers,
+              images, build cache. `docker exec -e DOCKER_HOST=tcp://localhost:2375
+              forgejo-runner-dind docker system df` says which; the prune sidecar
+              should be keeping it bounded. A full root also stops journald and
+              tailscaled state writes, which is how it cascades.

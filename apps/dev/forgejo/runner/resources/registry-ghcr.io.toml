@@ -1,0 +1,9 @@
+# Mounted into the dind daemon at /etc/docker/certs.d/ghcr.io/hosts.toml.
+# zot stores passthrough content under an upstream-host prefix, so the mirror URL
+# carries the full /v2/<registry> path (override_path). Unreachable mirror -> falls
+# back to `server`.
+server = "https://ghcr.io"
+
+[host."https://zot.core.wynning.tech/v2/ghcr.io"]
+  capabilities = ["pull", "resolve"]
+  override_path = true

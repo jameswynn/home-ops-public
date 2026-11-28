@@ -1,0 +1,62 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app booklore
+  namespace: &namespace default
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  targetNamespace: *namespace
+  components:
+    - ../../../../components/nfs-scaler
+    - ../../../../components/kopiur
+  postBuild:
+    substitute:
+      APP: *app
+      KOPIUR_CAPACITY: 1Gi
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/default/booklore/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+# Second kopiur instance for grimmory's bundled MariaDB volume (the component
+# names every resource after ${APP}, so it can't share booklore's). The image
+# has no Postgres support yet (grimmory-tools/grimmory#3043). The backup is a
+# crash-consistent copy of the InnoDB files; restored files come back
+# 1000-owned and the linuxserver init runs `lsiown -R abc:abc /config` on start.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app booklore-mariadb
+  namespace: &namespace default
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: booklore
+  targetNamespace: *namespace
+  components:
+    - ../../../../components/kopiur
+  postBuild:
+    substitute:
+      APP: *app
+      KOPIUR_CAPACITY: 5Gi
+  interval: 30m
+  retryInterval: 1m
+  timeout: 3m
+  path: ./apps/default/booklore/mariadb
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

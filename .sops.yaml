@@ -1,0 +1,40 @@
+---
+creation_rules:
+  - path_regex: ansible/.*\.sops\.ya?ml
+    unencrypted_regex: "^(kind)$"
+    age: >-
+      age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem
+
+  # Non-Secret YAML (plain top-level keys, e.g. TF_VAR_*/BWS_* for mise `_.file`).
+  # Must stay ABOVE the catch-all below: that rule's encrypted_regex is scoped to
+  # `data`/`stringData`, so it would append sops metadata and leave these values
+  # in PLAINTEXT. No encrypted_regex here means every value is encrypted.
+  - path_regex: tofu/.*\.sops\.ya?ml$
+    age: >-
+      age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem
+
+  # VPS doco-cd bootstrap creds. Second recipient is an age identity generated ON
+  # heimdall (never leaves it) so docker/update-doco-cd.sh can decrypt this one file
+  # there. Scoped to this path on purpose: the public-facing box must not hold the
+  # main key, which decrypts every cluster secret. Must stay ABOVE the *.sops.env rule.
+  - path_regex: docker/vps/\.doco-cd/secret\.sops\.env$
+    age: >-
+      age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem,
+      age197mdcc2s6zjsgjd70rg45g3pz5570zr5vdrkdlpmlh7lnsyta98qqkx4t4
+
+  # NAS doco-cd bootstrap creds — same pattern: second recipient is an age identity
+  # generated ON the NAS (~wynnj/.config/sops/age/keys.txt), replacing the nas-doco era's
+  # copy of the main key there.
+  - path_regex: docker/nas/\.doco-cd/secret\.sops\.env$
+    age: >-
+      age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem,
+      age1c9pexf5mnfse4nud6k2c8mfddfrm4eaqy76drg643zywhsay0yasdkhhas
+
+  - path_regex: .*\.sops\.env$
+    age: >-
+      age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem
+
+  - path_regex: .*\.ya?ml
+    encrypted_regex: "^(data|stringData)$"
+    age: >-
+      age1zjgnh5c52xfue53fjsw7s5qyj5lqv9zj44rsk0rw7ywvs72xe3csfclpem

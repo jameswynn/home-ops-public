@@ -1,0 +1,43 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/dragonflydb.io/dragonfly_v1alpha1.json
+apiVersion: dragonflydb.io/v1alpha1
+kind: Dragonfly
+metadata:
+  name: ${APP}-dragonfly
+spec:
+  image: ghcr.io/dragonflydb/dragonfly:v2.1.0
+  replicas: ${DRAGONFLY_REPLICAS:-1}
+  networkPolicyEnabled: false
+  env:
+    - name: MAX_MEMORY
+      valueFrom:
+        resourceFieldRef:
+          resource: limits.memory
+          divisor: 1Mi
+  args:
+    - --maxmemory=$(MAX_MEMORY)Mi
+    - --proactor_threads=2
+    - --cluster_mode=emulated
+    - --lock_on_hashtags
+    - --default_lua_flags=allow-undeclared-keys
+  # CPU from 7d of Prometheus data across all 10 dragonfly instances: p95 ranges
+  # 12m-22m, so 25m covers the busiest with headroom. This template is shared —
+  # one edit moves every cache. Memory from 14d across all 12 instances: p95
+  # 25-63Mi, peak 74Mi (renovate). The limit also sets --maxmemory via
+  # MAX_MEMORY above. Do not lower it below 512Mi: dragonfly exits at start
+  # with "There are 2 threads, so 512.00MiB are required" when maxmemory is
+  # under 256Mi per proactor thread (every cache crashlooped at 256Mi,
+  # 2026-11-17). The request is what the scheduler counts, and that is honest.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: "kubernetes.io/hostname"
+      whenUnsatisfiable: "DoNotSchedule"
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: dragonfly

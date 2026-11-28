@@ -1,0 +1,89 @@
+{
+  "distSpecVersion": "1.1.1",
+  "storage": {
+    "rootDirectory": "/var/lib/registry",
+    "dedupe": true,
+    "gc": true,
+    "gcDelay": "1h",
+    "gcInterval": "24h",
+    "retention": {
+      "dryRun": false,
+      "delay": "24h",
+      "policies": [
+        {
+          "repositories": ["docker.io/**", "ghcr.io/**", "quay.io/**", "mirror.gcr.io/**"],
+          "deleteReferrers": true,
+          "deleteUntagged": true,
+          "keepTags": [{ "pulledWithin": "720h" }]
+        }
+      ]
+    }
+  },
+  "http": {
+    "address": "0.0.0.0",
+    "port": "5000",
+    "realm": "zot",
+    "compat": ["docker2s2"],
+    "auth": {
+      "htpasswd": { "path": "/etc/zot/auth/htpasswd" },
+      "failDelay": 5
+    },
+    "accessControl": {
+      "metrics": { "users": ["metrics"] },
+      "repositories": {
+        "**": {
+          "anonymousPolicy": ["read"],
+          "policies": [
+            { "users": ["james"], "actions": ["read", "create", "update", "delete"] }
+          ],
+          "defaultPolicy": ["read"]
+        }
+      }
+    }
+  },
+  "log": { "level": "info" },
+  "extensions": {
+    "search": { "enable": true },
+    "ui": { "enable": true },
+    "scrub": { "enable": true, "interval": "24h" },
+    "metrics": { "enable": true, "prometheus": { "path": "/metrics" } },
+    "sync": {
+      "enable": true,
+      "credentialsFile": "/etc/zot/auth/sync-credentials.json",
+      "registries": [
+        {
+          "urls": ["https://registry-1.docker.io"],
+          "onDemand": true,
+          "tlsVerify": true,
+          "maxRetries": 3,
+          "retryDelay": "30s",
+          "content": [{ "prefix": "**", "destination": "/docker.io" }]
+        },
+        {
+          "urls": ["https://ghcr.io"],
+          "onDemand": true,
+          "tlsVerify": true,
+          "maxRetries": 3,
+          "retryDelay": "30s",
+          "content": [{ "prefix": "**", "destination": "/ghcr.io" }]
+        },
+        {
+          "urls": ["https://quay.io"],
+          "onDemand": true,
+          "tlsVerify": true,
+          "maxRetries": 3,
+          "retryDelay": "30s",
+          "content": [{ "prefix": "**", "destination": "/quay.io" }]
+        },
+        {
+          "urls": ["https://mirror.gcr.io"],
+          "onDemand": true,
+          "tlsVerify": true,
+          "maxRetries": 3,
+          "retryDelay": "30s",
+          "content": [{ "prefix": "**", "destination": "/mirror.gcr.io" }]
+        }
+      ]
+    }
+  }
+}

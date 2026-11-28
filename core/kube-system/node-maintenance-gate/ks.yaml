@@ -1,0 +1,31 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.wynning.tech/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app node-maintenance-gate
+  namespace: kube-system
+spec:
+  targetNamespace: kube-system
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  path: ./core/kube-system/node-maintenance-gate/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # Ordering only, for a cold bootstrap: the gate reads longhorn.io CRDs and
+  # fails closed while they are absent, which would otherwise hold kured shut
+  # through the whole of a cluster rebuild.
+  dependsOn:
+    - name: longhorn
+      namespace: longhorn-system
+  # No wait/healthCheck on purpose. A DaemonSet health check is never satisfied
+  # while a node is legitimately rebooting, which is every maintenance window —
+  # Flux would sit in a failed state exactly when this component is working. The
+  # desired-vs-ready gap is watched by NodeMaintenanceGateIncomplete instead,
+  # which has a 15m `for` precisely so a rolling update or a single reboot does
+  # not trip it.
+  wait: false
